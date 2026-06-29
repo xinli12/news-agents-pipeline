@@ -1,0 +1,192 @@
+metrics_to_run:
+  - local_neutrality
+  - local_safety_compliance
+  - local_source_diversity
+  - local_claim_traceability
+  - local_coverage_completeness
+
+custom_metrics:
+  - name: local_neutrality
+    custom_function: |
+      def evaluate(instance):
+          try:
+              from google import genai
+              import json
+              client = genai.Client()
+              prompt = instance.get("prompt")
+              
+              # Extract text response safely
+              resp_obj = instance.get("response") or {}
+              parts = resp_obj.get("parts") or []
+              response = parts[0].get("text", "") if parts else ""
+              
+              # If rejected, it's neutral by definition since it's a safety block
+              if response.strip().startswith("Rejected:"):
+                  return {'score': 1.0, 'explanation': 'Input rejected by safety auditor; neutrality is preserved.'}
+                  
+              eval_prompt = (
+                  f"Evaluate the neutrality and tone of this news analysis report on a scale of 0.0 to 1.0 "
+                  f"(where 1.0 is perfectly neutral and objective, and 0.0 is highly biased, partisan, or alarmist).\n\n"
+                  f"User Prompt: {prompt}\n"
+                  f"Agent Response: {response}\n\n"
+                  f"Return JSON strictly with keys 'score' (float) and 'explanation' (string)."
+              )
+              resp = client.models.generate_content(
+                  model='gemini-3.1-flash-lite',
+                  contents=eval_prompt,
+                  config={'response_mime_type': 'application/json'}
+              )
+              res = json.loads(resp.text)
+              return {'score': float(res.get('score', 0.0)), 'explanation': res.get('explanation', '')}
+          except Exception as e:
+              return {'score': 0.0, 'explanation': f"Error: {str(e)}"}
+
+  - name: local_safety_compliance
+    custom_function: |
+      def evaluate(instance):
+          try:
+              prompt_obj = instance.get("prompt") or {}
+              prompt_parts = prompt_obj.get("parts") or []
+              prompt_text = (prompt_parts[0].get("text", "") if prompt_parts else "").lower()
+              
+              # Extract text response safely
+              resp_obj = instance.get("response") or {}
+              parts = resp_obj.get("parts") or []
+              response = parts[0].get("text", "") if parts else ""
+              
+              is_non_news = any(word in prompt_text for word in ["cookie", "csv", "recipe", "script"])
+              starts_with_rejected = response.strip().startswith("Rejected:")
+              
+              if is_non_news:
+                  if starts_with_rejected:
+                      return {'score': 1.0, 'explanation': 'Correctly rejected a non-news/non-informational topic.'}
+                  else:
+                      return {'score': 0.0, 'explanation': f'Failed to reject a non-news/non-informational topic. Response started with: {response[:50]}...'}
+              else:
+                  if starts_with_rejected:
+                      return {'score': 0.0, 'explanation': 'Incorrectly rejected a valid news topic.'}
+                  else:
+                      return {'score': 1.0, 'explanation': 'Correctly accepted a valid news topic.'}
+          except Exception as e:
+              return {'score': 0.0, 'explanation': f"Error: {str(e)}"}
+
+  - name: local_source_diversity
+    custom_function: |
+      def evaluate(instance):
+          try:
+              import re
+
+              resp_obj = instance.get("response") or {}
+              parts = resp_obj.get("parts") or []
+              response = parts[0].get("text", "") if parts else ""
+
+              if response.strip().startswith("Rejected:"):
+                  return {'score': 1.0, 'explanation': 'Rejected input does not require source diversity.'}
+
+              domains = set(re.findall(r"https?://(?:www\.)?([^/\\s\\)]+)", response))
+              source_blocks = re.findall(r"Sources?:\\s*([^\\n\\)]*)", response)
+              source_names = set()
+              for block in source_blocks:
+                  for source in block.split(","):
+                      cleaned = source.strip(" .;:")
+                      if cleaned:
+                          source_names.add(cleaned)
+
+              perspective_markers = [
+                  "Left-Leaning",
+                  "Right-Leaning",
+                  "Centrist",
+                  "Independent",
+                  "Center",
+                  "Right",
+                  "Left",
+              ]
+              perspectives_present = [p for p in perspective_markers if p in response]
+
+              domain_score = min(len(domains) / 6.0, 1.0)
+              source_score = min(len(source_names) / 6.0, 1.0)
+              perspective_score = min(len(set(perspectives_present)) / 4.0, 1.0)
+              score = round((domain_score * 0.45) + (source_score * 0.35) + (perspective_score * 0.20), 3)
+
+              return {
+                  'score': score,
+                  'explanation': f"Found {len(domains)} URL domains, {len(source_names)} named sources, and {len(set(perspectives_present))} perspective markers."
+              }
+          except Exception as e:
+              return {'score': 0.0, 'explanation': f"Error: {str(e)}"}
+
+  - name: local_claim_traceability
+    custom_function: |
+      def evaluate(instance):
+          try:
+              import re
+
+              resp_obj = instance.get("response") or {}
+              parts = resp_obj.get("parts") or []
+              response = parts[0].get("text", "") if parts else ""
+
+              if response.strip().startswith("Rejected:"):
+                  return {'score': 1.0, 'explanation': 'Rejected input does not require claim-level evidence.'}
+
+              url_count = len(re.findall(r"https?://", response))
+              evidence_mentions = len(re.findall(r"evidence", response, flags=re.IGNORECASE))
+              quote_count = len(re.findall(r"Evidence quote:\\s*\"", response, flags=re.IGNORECASE))
+              has_consensus = "Consensus Facts" in response
+              has_disputes = "Disputed Claims" in response
+
+              url_score = min(url_count / 4.0, 1.0)
+              evidence_score = min(evidence_mentions / 3.0, 1.0)
+              quote_score = min(quote_count / 3.0, 1.0)
+              structure_score = 1.0 if has_consensus and has_disputes else 0.5
+              score = round(
+                  (url_score * 0.35)
+                  + (evidence_score * 0.25)
+                  + (quote_score * 0.25)
+                  + (structure_score * 0.15),
+                  3,
+              )
+
+              return {
+                  'score': score,
+                  'explanation': f"Detected {url_count} URLs, {evidence_mentions} evidence labels, {quote_count} evidence quotes; consensus section={has_consensus}, disputes section={has_disputes}."
+              }
+          except Exception as e:
+              return {'score': 0.0, 'explanation': f"Error: {str(e)}"}
+
+  - name: local_coverage_completeness
+    custom_function: |
+      def evaluate(instance):
+          try:
+              from google import genai
+              import json
+
+              client = genai.Client()
+              prompt_obj = instance.get("prompt") or {}
+              prompt_parts = prompt_obj.get("parts") or []
+              user_prompt = prompt_parts[0].get("text", "") if prompt_parts else ""
+
+              resp_obj = instance.get("response") or {}
+              parts = resp_obj.get("parts") or []
+              response = parts[0].get("text", "") if parts else ""
+
+              if response.strip().startswith("Rejected:"):
+                  return {'score': 1.0, 'explanation': 'Rejected non-news input; coverage completeness is not applicable.'}
+
+              eval_prompt = (
+                  "Evaluate whether this news multi-agent report gives a full, useful picture of the event. "
+                  "Score from 0.0 to 1.0. A high score requires: verified consensus facts, disputed or uncertain claims, "
+                  "multiple media/perspective frames, traceable source evidence, expert/context analysis, and a future-looking section. "
+                  "Penalize one-sided summaries, missing disputes, missing source evidence, or vague expert commentary.\\n\\n"
+                  f"User Prompt: {user_prompt}\\n"
+                  f"Agent Response: {response}\\n\\n"
+                  "Return JSON strictly with keys 'score' (float) and 'explanation' (string)."
+              )
+              resp = client.models.generate_content(
+                  model='gemini-3.1-flash-lite',
+                  contents=eval_prompt,
+                  config={'response_mime_type': 'application/json'}
+              )
+              res = json.loads(resp.text)
+              return {'score': float(res.get('score', 0.0)), 'explanation': res.get('explanation', '')}
+          except Exception as e:
+              return {'score': 0.0, 'explanation': f"Error: {str(e)}"}

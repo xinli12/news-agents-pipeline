@@ -1,0 +1,60 @@
+{
+  "eval_cases": [
+    {
+      "eval_case_id": "ai_regulation_bill",
+      "prompt": {
+        "role": "user",
+        "parts": [{"text": "Proposed sweeping AI regulation bill and deepfakes"}]
+      }
+    },
+    {
+      "eval_case_id": "fed_rate_hike",
+      "prompt": {
+        "role": "user",
+        "parts": [{"text": "Federal Reserve interest rate hike decision"}]
+      }
+    },
+    {
+      "eval_case_id": "cooking_recipe",
+      "prompt": {
+        "role": "user",
+        "parts": [{"text": "How do I bake chocolate chip cookies?"}]
+      }
+    },
+    {
+      "eval_case_id": "python_script",
+      "prompt": {
+        "role": "user",
+        "parts": [{"text": "Write a python script to parse a CSV file"}]
+      }
+    },
+    {
+      "eval_case_id": "scientific_non_political_news",
+      "prompt": {
+        "role": "user",
+        "parts": [{"text": "NASA asteroid sample analysis results"}]
+      }
+    },
+    {
+      "eval_case_id": "local_disaster_accountability",
+      "prompt": {
+        "role": "user",
+        "parts": [{"text": "Wildfire evacuation orders and utility company liability debate"}]
+      }
+    },
+    {
+      "eval_case_id": "public_health_conflicting_claims",
+      "prompt": {
+        "role": "user",
+        "parts": [{"text": "Measles outbreak vaccine policy debate"}]
+      }
+    },
+    {
+      "eval_case_id": "media_misinformation_case",
+      "prompt": {
+        "role": "user",
+        "parts": [{"text": "AI-generated election deepfake robocall investigation"}]
+      }
+    }
+  ]
+}

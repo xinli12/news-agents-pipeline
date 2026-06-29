@@ -1,0 +1,11 @@
+{
+  "eval_cases": [
+    {
+      "eval_case_id": "cooking_recipe",
+      "prompt": {
+        "role": "user",
+        "parts": [{"text": "How do I bake chocolate chip cookies?"}]
+      }
+    }
+  ]
+}
