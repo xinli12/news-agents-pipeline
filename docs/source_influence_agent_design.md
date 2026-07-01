@@ -1,15 +1,15 @@
-# Source Influence Agent Design
+# Source Transparency / Source Influence Agent Design
 
 ## Purpose
 
-The Source Influence Agent is an optional NewsLens agent that maps evidence-backed information about media outlets behind a news topic. It helps users understand visible ownership, funding, government affiliation, source bias, reliability, objectivity, and coverage trends across the articles already gathered by the Search Agent.
+The Source Transparency Agent is an optional NewsLens agent that maps evidence-backed information about media outlets behind a news topic. It helps users understand public ownership, funding model, government affiliation, institutional context, potential conflict-of-interest context, source bias, reliability, objectivity, and coverage trends across the articles already gathered by the Search Agent.
 
 Recommended product names:
 
+- Source Transparency Agent
 - Source Influence Agent
-- Ownership & Influence Mapping Agent
 
-Avoid names such as "Deep Mining Agent" because they imply covert investigation or speculation. The agent should present transparent, public, cited relationships rather than claims about hidden backers or undisclosed influence.
+Avoid names such as "Deep Mining Agent" in product UI. That name implies invasive investigation, covert extraction, or speculative discovery of undisclosed influence. The feature should instead present transparent, public, cited institutional context and evidence-backed relationships.
 
 ## Product Scope
 
@@ -17,12 +17,12 @@ The agent answers questions such as:
 
 - Which outlets appeared in the current article set?
 - What public ownership or affiliation information is available for those outlets?
-- Are any outlets publicly owned, nonprofit, state-funded, government-operated, privately owned, or part of a larger media group?
+- Are any outlets publicly owned, nonprofit, state-funded, government-operated, privately owned, or part of a larger media group when public evidence supports that statement?
 - How do reliability and objectivity scores compare across ownership types?
 - Are coverage patterns or narrative frames clustered by outlet type, bias category, geography, or source group?
 - Which influence relationships are directly verified, cautiously inferred from public records, or unknown?
 
-The output should support media literacy and source transparency. It should not label outlets as coordinated, captured, paid off, or secretly controlled unless a cited public source directly supports the exact relationship.
+The output should support media literacy and source transparency. It should not label outlets as coordinated, captured, paid, or institutionally directed unless a cited public source directly supports the exact relationship.
 
 ## Claim Boundaries
 
@@ -36,7 +36,7 @@ The agent can claim:
 
 The agent cannot claim:
 
-- Hidden financial support, covert sponsorship, intelligence affiliation, political control, or coordinated editorial direction without direct public evidence.
+- Non-public financial support, undisclosed sponsorship, intelligence affiliation, political control, or coordinated editorial direction without direct public evidence.
 - That ownership alone proves bias, unreliability, propaganda, or editorial intent.
 - That shared language across outlets proves coordination when wire-service reuse, common facts, press releases, or normal news cycles could explain the overlap.
 - That absence of public ownership data implies concealment.
@@ -67,11 +67,93 @@ Suggested output:
 
 This design does not require immediate changes to `app.py`, `agents/`, `schemas.py`, or tests.
 
+## Architecture Split
+
+The feature should be designed as a small pipeline of separable responsibilities rather than one agent that searches, enriches, reasons, audits, and visualizes at once.
+
+### Outlet Aggregator
+
+The Outlet Aggregator is deterministic code over existing `articles_data`. It should not call external services or make ownership claims.
+
+Responsibilities:
+
+- Normalize outlets from `source` and URL domain.
+- Group articles by outlet, outlet group, wire service, and duplicate cluster.
+- Compute article counts, publication windows, average reliability scores, average objectivity scores, bias category distribution, media type distribution, and media scale distribution.
+- Preserve evidence trails back to article titles, URLs, published dates, summaries, and snippets.
+- Flag weak independence when many articles share a `wire_service` or `duplicate_cluster`.
+
+### Optional Ownership Lookup Helpers
+
+Ownership Lookup Helpers are optional post-MVP helpers behind explicit feature flags. They should be deterministic fetchers and parsers, not synthesis agents.
+
+Potential helpers:
+
+- `ENABLE_WIKIDATA_SOURCE_LOOKUP`: public outlet/entity metadata.
+- `ENABLE_SEC_EDGAR_SOURCE_LOOKUP`: public-company parent, ticker, CIK, and filing evidence.
+- `ENABLE_GDELT_SOURCE_TRENDS`: wider volume and trend analysis beyond the selected source set.
+
+Each helper should return raw or lightly normalized evidence with source URLs, lookup timestamps, entity identifiers, and caveats. If a helper cannot verify a relationship, it should return `unknown` rather than guessing.
+
+### Source Influence Agent
+
+The Source Influence Agent performs cautious synthesis over the Outlet Aggregator output and any enabled helper results. It should explain source transparency and coverage patterns, not discover unsupported ownership or affiliation claims.
+
+Responsibilities:
+
+- Summarize public ownership, funding model, government affiliation, institutional context, and potential conflict-of-interest context only when supported by evidence.
+- Distinguish `verified`, `inferred`, and `unknown` relationship status.
+- Compare coverage patterns across outlet groups without claiming causation.
+- Produce `SourceInfluenceMap` for downstream UI rendering.
+
+### Influence Audit Agent
+
+The Influence Audit Agent reviews the synthesized map for safety, traceability, and calibrated uncertainty before display.
+
+Responsibilities:
+
+- Reject unsupported ownership, funding, affiliation, or coordination claims.
+- Verify that evidence-backed relationships include URLs.
+- Confirm that `unknown` values are not framed as suspicious.
+- Confirm that ownership and government funding are presented as context, not proof of editorial intent.
+
+## MVP-First Implementation
+
+The MVP should be `articles_data`-only. It should not call Wikidata, SEC EDGAR, GDELT, search engines, scraping helpers, or any new external lookup service.
+
+Use only existing article fields:
+
+- `source`
+- `url`
+- `published_date`
+- `bias_category`
+- `source_reliability_score`
+- `objectivity_score`
+- `outlet_group`
+- `wire_service`
+- `duplicate_cluster`
+- `summary`
+- `full_content_snippet`
+
+MVP outputs should focus on:
+
+- Source transparency summaries based on the current source set.
+- Coverage pattern visualizations grouped by outlet, source type, bias category, wire service, and duplicate cluster.
+- Evidence trails back to current articles.
+- Explicit `unknown` ownership, funding, and affiliation fields unless already present in supplied article evidence.
+
+MVP outputs should not:
+
+- Make public ownership, funding model, government affiliation, or institutional-context claims that cannot be supported by the supplied article data.
+- Infer editorial intent from ownership type.
+- Treat repeated wire copy as independent narrative alignment.
+- Treat missing ownership information as suspicious.
+
 ## Data Source Strategy
 
 ### 1. Reuse Existing `articles_data` First
 
-The MVP should start from the articles already selected by Search Agent:
+The first version should start and stop with the articles already selected by Search Agent:
 
 - `source`
 - `url`
@@ -88,9 +170,9 @@ The MVP should start from the articles already selected by Search Agent:
 - `summary`
 - `full_content_snippet`
 
-This keeps the feature cheap, deterministic, and aligned with the current pipeline. The agent can aggregate by source name or normalized domain, then compute first-pass outlet profiles, article counts, reliability/objectivity averages, and coverage patterns.
+This keeps the feature cheap, deterministic, and aligned with the current pipeline. The Outlet Aggregator can group by source name or normalized domain, then compute first-pass outlet profiles, article counts, reliability/objectivity averages, publication timing, source-type summaries, and coverage patterns.
 
-### 2. Optional Wikidata Lookup
+### 2. Optional Wikidata Lookup, Post-MVP
 
 Wikidata can enrich outlet profiles with public entity metadata:
 
@@ -104,7 +186,7 @@ Wikidata can enrich outlet profiles with public entity metadata:
 
 Use Wikidata as a starting point, not as final truth. Preserve statement references when available. Mark unsourced or weakly sourced values as `inferred` or `unknown`, not `verified`.
 
-### 3. Optional SEC EDGAR Lookup
+### 3. Optional SEC EDGAR Lookup, Post-MVP
 
 SEC EDGAR can enrich profiles for US public companies and listed parent companies:
 
@@ -116,7 +198,7 @@ SEC EDGAR can enrich profiles for US public companies and listed parent companie
 
 The agent should not infer editorial influence from public-company ownership. It can say that a parent company is publicly traded when supported by filings.
 
-### 4. Optional GDELT Lookup
+### 4. Optional GDELT Lookup, Post-MVP
 
 GDELT can support wider trend analysis when the current article set is too narrow:
 
@@ -257,7 +339,8 @@ The agent instruction should require:
 - Mark ownership and funding information as `unknown` unless supported by public evidence.
 - Separate source-set observations from optional external lookup results.
 - Treat wire services and duplicate clusters as weak evidence of independent narrative alignment.
-- Avoid loaded terms such as "puppet", "front", "controlled by", "propaganda network", or "secret backer" unless directly quoted from a cited source and contextualized neutrally.
+- Use neutral terms such as public ownership, funding model, government affiliation, institutional context, potential conflict-of-interest context, and evidence-backed relationship.
+- Avoid loaded terms such as "puppet", "front", "controlled by", or "propaganda network" unless directly quoted from a cited source and contextualized neutrally.
 - Include limitations for each material claim.
 - Prefer concise uncertainty over broad inference.
 
@@ -270,7 +353,7 @@ Proposed audit criteria:
 1. Schema compliance: output must match `SourceInfluenceMap`, with nested outlet profiles, links, trends, and narrative alignment items shaped correctly.
 2. Evidence traceability: every ownership, funding, affiliation, and influence link must include evidence URLs or be marked `unknown`.
 3. Claim status discipline: relationships must be labeled `verified`, `inferred`, or `unknown`; speculative relationships must not be presented as facts.
-4. No hidden-backer speculation: reject or require revision for claims about covert support, undisclosed control, or hidden coordination without direct evidence.
+4. No unsupported institutional claims: reject or require revision for claims about non-public support, undisclosed control, or coordination without direct evidence.
 5. Neutral language: reject conspiracy framing, loaded labels, guilt-by-association, or claims that ownership alone proves editorial intent.
 6. Data-source separation: observations from `articles_data`, Wikidata, SEC EDGAR, and GDELT must be distinguishable.
 7. Confidence calibration: confidence scores must decrease when evidence is stale, indirect, missing URLs, based on weak entity matching, or derived from a narrow article set.
@@ -282,7 +365,35 @@ Proposed audit criteria:
 
 The Streamlit dashboard can add a future optional section or tab after the current Sources and Perspectives & Disputes views. The UI should make evidence and uncertainty visible.
 
-### Ownership and Affiliation Table
+### MVP Visualization Plan
+
+The MVP UI should visualize source transparency and coverage patterns from `articles_data` only.
+
+1. Outlet profile table
+   - One row per normalized outlet.
+   - Columns: outlet, domain, article count, outlet group, media type, media scale, bias category, average reliability, average objectivity, wire service, duplicate cluster count, first published date, latest published date, and caveats.
+
+2. Reliability vs objectivity scatter grouped by outlet/source type
+   - X-axis: objectivity score.
+   - Y-axis: source reliability score.
+   - Color: outlet group or media type.
+   - Shape or outline: wire-service or duplicate-cluster flag.
+   - Size: article count.
+
+3. Narrative framing bar chart or table
+   - Group snippets or summaries by bias category, outlet group, or media type.
+   - Show frame labels, representative phrases, outlet counts, and article counts.
+   - Avoid presenting similar wording as coordination when wire-service duplication or shared factual reporting explains it.
+
+4. Publication timeline by outlet group
+   - Show article publication dates grouped by outlet group, media type, or bias category.
+   - Flag clustered publication patterns as observed timing only, not evidence of coordination.
+
+5. Evidence ledger for any ownership, funding, or affiliation claim
+   - In MVP, this is usually empty or marked `unknown` unless the supplied article data itself contains support.
+   - Each non-unknown claim must show evidence URL, quote or snippet, status, confidence, and limitation.
+
+### Ownership and Affiliation Table, Post-MVP
 
 Purpose: show one row per outlet.
 
@@ -307,7 +418,7 @@ Interactions:
 - Expand a row to show evidence snippets and limitations.
 - Highlight `unknown` rather than hiding it.
 
-### Reliability vs Objectivity Scatter
+### Reliability vs Objectivity Scatter, Post-MVP Enriched
 
 Purpose: preserve the existing source landscape while adding ownership context.
 
@@ -324,7 +435,7 @@ Important caveat text:
 
 - Ownership type is contextual metadata, not proof of editorial behavior.
 
-### Narrative Trend Timeline
+### Narrative Trend Timeline, Post-MVP Enriched
 
 Purpose: show how coverage and narrative emphasis changed over time.
 
@@ -340,7 +451,7 @@ Interactions:
 - Toggle between current article set and optional wider trend source.
 - Click a trend item to see representative articles and evidence.
 
-### Influence Links and Evidence Ledger
+### Influence Links and Evidence Ledger, Post-MVP Enriched
 
 Purpose: make every relationship auditable.
 
@@ -368,16 +479,38 @@ Interactions:
 
 The feature should always surface these rules in prompts, audit criteria, and UI copy:
 
-- Do not infer hidden support, hidden owners, covert influence, or coordination without direct evidence.
+- Do not infer non-public support, undisclosed owners, institutional direction, or coordination without direct evidence.
 - Distinguish `verified`, `inferred`, and `unknown` for every material relationship.
 - Avoid conspiracy framing.
 - Avoid guilt-by-association.
 - Show confidence scores and evidence URLs.
 - Treat ownership as context, not as proof of bias or falsehood.
+- Ownership is context, not proof of editorial intent.
+- State funding is context, not proof of propaganda.
+- Unknown ownership is not suspicious by itself.
+- Similar wording is not coordination if wire-service duplication, shared factual reporting, common press releases, or normal news-cycle behavior explains it.
 - Treat state funding, public broadcasting, nonprofit funding, philanthropic support, and advertising models as descriptive facts unless evidence supports a stronger claim.
 - Do not use weak source matching to connect similarly named entities.
 - Make stale, missing, conflicting, or single-source evidence explicit.
 - Prefer "public records identify X as owner" over "X influences outlet Y" unless influence is directly documented.
+
+## Recruitment Rules
+
+Suggested Recruiter criteria for this optional agent:
+
+Recruit when:
+
+- The topic is about media, AI/platform disputes, geopolitics, elections, public policy, war, sanctions, corporate litigation, or state media.
+- The source set has many outlet types, such as wire services, local outlets, national outlets, international outlets, public broadcasters, advocacy outlets, trade publications, or independent publications.
+- The source set shows clear relevance for public ownership, funding model, government affiliation, institutional context, or potential conflict-of-interest context.
+- Perspective or dispute analysis would benefit from separating article-level framing from outlet-level context.
+
+Skip when:
+
+- The topic is a simple science update, weather event, sports score, commodity factual update, or routine market update.
+- The source set has low diversity or too few outlets to compare responsibly.
+- The available article data cannot support meaningful source transparency beyond the existing Sources tab.
+- The user needs a fast factual briefing more than a source-context analysis.
 
 ## MVP Implementation Plan
 
@@ -387,43 +520,48 @@ No code should be implemented in this design phase. A future implementation can 
    - Add the proposed Pydantic models to `agents/schemas.py`.
    - Unit test default values, required fields, and enum-like status behavior.
 
-2. Build an `articles_data`-only Source Influence Agent
+2. Build an `articles_data`-only Outlet Aggregator
    - Create a new agent that groups outlets from existing article data.
-   - Produce outlet profiles with article counts, reliability/objectivity averages, bias categories, duplicate/wire caveats, and `unknown` ownership fields.
+   - Produce outlet profiles with article counts, reliability/objectivity averages, bias categories, publication timing, duplicate/wire caveats, and `unknown` ownership fields.
    - Unit test aggregation behavior without network calls.
 
-3. Add Influence Audit Agent criteria
+3. Build an MVP Source Influence Agent over aggregator output
+   - Produce source transparency and coverage pattern summaries from `articles_data` only.
+   - Avoid unsupported public ownership, funding model, government affiliation, or institutional-context claims.
+   - Unit test that unknown ownership remains unknown without evidence.
+
+4. Add Influence Audit Agent criteria
    - Add a dedicated criteria block to the coordinator.
    - Verify it flags missing evidence URLs for non-unknown relationships.
    - Unit test audit prompt construction or criteria routing where practical.
 
-4. Add optional recruitment
+5. Add optional recruitment
    - Extend recruitment output only after the basic agent is stable.
    - Recruit this agent for topics where source transparency is useful, such as media criticism, geopolitical coverage, public broadcasters, corporate disputes, or topics with many outlet types.
    - Keep it skipped for simple factual queries.
 
-5. Add Streamlit read-only display
-   - Add ownership table and scatter plot first.
+6. Add Streamlit read-only display
+   - Add outlet profile table, reliability/objectivity scatter, framing table, publication timeline, and evidence ledger first.
    - Display `unknown` and caveats prominently.
-   - Add evidence ledger before adding trend timelines.
+   - Keep ownership/funding/affiliation claims empty or unknown unless supported by article evidence.
 
-6. Add optional Wikidata enrichment behind a flag
+7. Add optional Wikidata enrichment behind a flag
    - Use deterministic lookup helpers.
    - Cache lookup results where appropriate.
    - Require evidence URLs or source references before marking relationships `verified`.
    - Add tests with mocked responses.
 
-7. Add optional SEC EDGAR enrichment
+8. Add optional SEC EDGAR enrichment
    - Restrict to public companies and known parent entities.
    - Store filing URLs and entity identifiers.
    - Add tests with fixture filings or mocked API responses.
 
-8. Add optional GDELT trend analysis
+9. Add optional GDELT trend analysis
    - Keep GDELT trends separate from current article-set trends.
    - Add date-window controls.
    - Add tests for trend item construction and source-basis labeling.
 
-9. Add end-to-end verification
+10. Add end-to-end verification
    - Run unit and integration tests.
    - Add a focused Streamlit or Playwright check only after UI implementation.
    - Confirm all claims include status, confidence, caveats, and evidence URLs.
@@ -433,7 +571,7 @@ No code should be implemented in this design phase. A future implementation can 
 - No graph database.
 - No automated claim that ownership causes editorial framing.
 - No paid or private data-provider dependency.
-- No hidden-affiliation detection.
+- No non-public affiliation detection.
 - No social-media network analysis.
 - No deployment changes.
 
