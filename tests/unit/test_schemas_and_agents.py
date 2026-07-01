@@ -21,6 +21,32 @@ def test_public_reporter_agent() -> None:
     assert agent.output_key == "public_report_data"
 
 
+def test_dispute_agent_contract_is_preserved() -> None:
+    from agents.dispute_agent import get_dispute_agent
+    from agents.schemas import DisputeList
+
+    agent = get_dispute_agent()
+
+    assert agent.name == "dispute_agent"
+    assert agent.output_schema == DisputeList
+    assert agent.output_key == "disputes_data"
+    assert "under-supported" in agent.instruction
+    assert "wire-service" in agent.instruction
+
+
+def test_bias_agent_contract_is_preserved_for_perspective_agent() -> None:
+    from agents.bias_agent import get_bias_agent
+    from agents.schemas import PerspectiveProfile
+
+    agent = get_bias_agent()
+
+    assert agent.name == "bias_agent"
+    assert agent.output_schema == PerspectiveProfile
+    assert agent.output_key == "bias_data"
+    assert "Perspective Agent" in agent.instruction
+    assert "classification axis" in agent.instruction
+
+
 def test_fact_schema_supports_traceable_evidence() -> None:
     from agents.schemas import DisputeItem, EvidenceItem, FactItem, TimelineEvent
 
@@ -58,6 +84,75 @@ def test_fact_schema_supports_traceable_evidence() -> None:
         evidence=[evidence],
     )
     assert timeline_event.evidence[0].quote.startswith("Officials said")
+
+
+def test_dispute_schema_supports_evidence_strength_metadata() -> None:
+    from agents.schemas import DisputeItem, EvidenceItem
+
+    evidence = EvidenceItem(
+        source="Local Daily",
+        title="Residents question project cost",
+        url="https://local.example/project-cost",
+        published_date="2026-06-28",
+        bias_category="Local",
+        quote="Residents questioned whether the published cost estimate includes mitigation funding.",
+    )
+
+    dispute = DisputeItem(
+        claim="Whether the project cost estimate includes mitigation funding.",
+        dispute_question="Does the cost estimate include mitigation funding?",
+        side_a_assertion="Officials say mitigation funding is included.",
+        side_a_sources=["City Office"],
+        side_a_support_level="single-source",
+        side_b_assertion="Residents say the available documents do not show it.",
+        side_b_sources=["Local Daily"],
+        side_b_evidence=[evidence],
+        side_b_support_level="source-supported",
+        evidence_warning="Side A is under-supported by the supplied article set.",
+    )
+
+    assert dispute.dispute_question.startswith("Does")
+    assert dispute.side_a_support_level == "single-source"
+    assert dispute.evidence_warning == "Side A is under-supported by the supplied article set."
+
+
+def test_perspective_schema_supports_axis_and_inference_metadata() -> None:
+    from agents.schemas import EvidenceItem, NarrativeProfile, PerspectiveProfile
+
+    evidence = EvidenceItem(
+        source="Tech Wire",
+        title="Startups criticize compliance plan",
+        url="https://tech.example/compliance",
+        published_date="2026-06-29",
+        bias_category="Industry",
+        quote="Startup founders said compliance costs could favor larger incumbents.",
+    )
+
+    profile = PerspectiveProfile(
+        classification_axis="industry/business role",
+        profiles=[
+            NarrativeProfile(
+                perspective_group="Startup operators",
+                core_narrative="Compliance costs may advantage larger incumbents.",
+                key_arguments=["Audits and legal reviews increase fixed costs."],
+                common_emotional_triggers=["barrier to entry"],
+                notable_omissions=["Potential consumer-safety benefits"],
+                representative_sources=["Tech Wire"],
+                evidence=[evidence],
+                support_status="reported perspective from sources",
+                analytical_inference="",
+                unsupported_warning="",
+            )
+        ],
+        key_rhetorical_differences="Industry sources emphasized costs; safety sources emphasized risk reduction.",
+        unsupported_perspectives=["Consumer advocates: not enough source support found."],
+    )
+
+    assert profile.classification_axis == "industry/business role"
+    assert profile.profiles[0].support_status == "reported perspective from sources"
+    assert profile.unsupported_perspectives == [
+        "Consumer advocates: not enough source support found."
+    ]
 
 
 def test_input_review_schema_supports_query_repair_options() -> None:
@@ -123,3 +218,95 @@ def test_search_candidate_pool_deduplicates_wire_clusters() -> None:
     assert len(candidates) == 2
     assert candidates[0]["wire_service"] == "Reuters"
     assert wire_groups
+
+
+def test_dispute_and_perspective_audit_criteria_cover_traceability_and_inference() -> None:
+    from agents.coordinator import DISPUTE_AUDIT_CRITERIA, PERSPECTIVE_AUDIT_CRITERIA
+
+    dispute_criteria = DISPUTE_AUDIT_CRITERIA.lower()
+    perspective_criteria = PERSPECTIVE_AUDIT_CRITERIA.lower()
+
+    for required in ["neutral", "quote", "url", "unsupported", "schema"]:
+        assert required in dispute_criteria
+
+    for required in [
+        "neutral",
+        "quote",
+        "url",
+        "unsupported",
+        "inference",
+        "schema",
+    ]:
+        assert required in perspective_criteria
+
+
+def test_merge_disputed_claims_preserves_unique_fact_and_dispute_agent_claims() -> None:
+    from agents.coordinator import merge_disputed_claims
+
+    fact_disputes = [
+        {
+            "claim": "Whether the rule raises compliance costs.",
+            "side_a_assertion": "Supporters say costs are manageable.",
+            "side_b_assertion": "Opponents say costs are material.",
+        },
+        {
+            "claim": "Whether the rule improves transparency.",
+            "side_a_assertion": "Supporters say disclosure improves transparency.",
+            "side_b_assertion": "Opponents say disclosures are incomplete.",
+        },
+    ]
+    dispute_agent_disputes = [
+        {
+            "claim": "Whether the rule raises compliance costs",
+            "side_a_assertion": "Officials say costs are manageable.",
+            "side_b_assertion": "Companies say costs are material.",
+        },
+        {
+            "claim": "Whether small firms receive enough transition time.",
+            "side_a_assertion": "Regulators say phased deadlines are enough.",
+            "side_b_assertion": "Small firms say the timeline remains too short.",
+        },
+    ]
+
+    merged = merge_disputed_claims(fact_disputes, dispute_agent_disputes)
+
+    assert [item["claim"] for item in merged] == [
+        "Whether the rule raises compliance costs.",
+        "Whether the rule improves transparency.",
+        "Whether small firms receive enough transition time.",
+    ]
+
+
+def test_merge_disputed_claims_deduplicates_dispute_question_fallbacks() -> None:
+    from agents.coordinator import merge_disputed_claims
+
+    fact_disputes = [
+        {
+            "claim": "",
+            "dispute_question": "Whether emergency funding reached local agencies.",
+            "side_a_assertion": "Officials say funds were distributed.",
+            "side_b_assertion": "Local agencies say funds were delayed.",
+        }
+    ]
+    dispute_agent_disputes = [
+        {
+            "claim": "",
+            "dispute_question": "Whether emergency funding reached local agencies",
+            "side_a_assertion": "Officials report the funding was distributed.",
+            "side_b_assertion": "Local agencies report delays.",
+        },
+        {
+            "claim": "",
+            "dispute_question": "",
+            "side_a_assertion": "Officials say the deadline remains unchanged.",
+            "side_b_assertion": "Advocates say the deadline may move.",
+        },
+    ]
+
+    merged = merge_disputed_claims(fact_disputes, dispute_agent_disputes)
+
+    assert len(merged) == 2
+    assert merged[0]["dispute_question"] == (
+        "Whether emergency funding reached local agencies."
+    )
+    assert merged[1]["side_a_assertion"] == "Officials say the deadline remains unchanged."

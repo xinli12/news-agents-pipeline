@@ -1,4 +1,5 @@
 import asyncio
+import html
 import os
 import threading
 import time
@@ -336,11 +337,131 @@ def join_or_dash(items: list[str] | None) -> str:
     return ", ".join(items or []) or "-"
 
 
+def count_items(items: list | None) -> int:
+    return len(items or [])
+
+
+def friendly_agent_name(name: str | None) -> str:
+    display_names = {
+        "review_agent": "Input Check Agent",
+        "review": "Input Check Agent",
+        "search_agent": "Search Agent",
+        "search": "Search Agent",
+        "recruiter_agent": "Recruiter Agent",
+        "recruiter": "Recruiter Agent",
+        "fact_agent": "Fact & Consensus Agent",
+        "fact_bias": "Fact & Consensus Agent",
+        "dispute_agent": "Dispute Agent",
+        "dispute": "Dispute Agent",
+        "bias_agent": "Perspective Agent",
+        "expert_agent": "Expert Agent",
+        "expert": "Expert Agent",
+        "outlook_agent": "Future Outlook Agent",
+        "outlook": "Future Outlook Agent",
+        "public_reporter_agent": "Public Reporter Agent",
+        "public_report": "Public Reporter Agent",
+        "public_editor_agent": "Public Editor Agent",
+        "public_editor": "Public Editor Agent",
+    }
+    key = str(name or "")
+    if key.endswith("_audit"):
+        key = key.removesuffix("_audit")
+    return display_names.get(key, key.replace("_", " ").title() or "Agent")
+
+
+def approval_label(value: bool | None) -> str:
+    if value is True:
+        return "Approved"
+    if value is False:
+        return "Needs revision"
+    return "Warning"
+
+
+def feedback_preview(text: str, limit: int = 120) -> str:
+    clean = " ".join(str(text or "").split())
+    if len(clean) <= limit:
+        return clean
+    return clean[: limit - 1].rstrip() + "..."
+
+
 def render_chips(items: list[tuple[str, str]]) -> None:
-    html = []
+    chip_html = []
     for label, state in items:
-        html.append(f'<span class="status-chip {state}">{label}</span>')
-    st.markdown("".join(html), unsafe_allow_html=True)
+        safe_label = html.escape(str(label))
+        safe_state = html.escape(str(state))
+        chip_html.append(f'<span class="status-chip {safe_state}">{safe_label}</span>')
+    st.markdown("".join(chip_html), unsafe_allow_html=True)
+
+
+def support_state(value: str | None, evidence: list[dict] | None) -> tuple[str, str]:
+    support = str(value or "").strip()
+    support_lower = support.lower()
+    if not support:
+        support = "Evidence attached" if evidence else "No evidence attached"
+    if any(term in support_lower for term in ["weak", "under", "missing", "unsupported"]):
+        return support, "warn"
+    if evidence:
+        return support, ""
+    return support, "warn"
+
+
+def evidence_balance_label(side_a_count: int, side_b_count: int) -> tuple[str, float]:
+    if side_a_count == 0 and side_b_count == 0:
+        return "No evidence attached", 0.0
+    if side_a_count == 0 or side_b_count == 0:
+        return "One side weakly supported", 0.25
+    larger = max(side_a_count, side_b_count)
+    smaller = min(side_a_count, side_b_count)
+    if larger - smaller >= 2:
+        return "Uneven evidence support", smaller / larger
+    return "Reasonably balanced evidence", 1.0
+
+
+def audit_entries_for(results: dict, agent_names: set[str]) -> list[dict]:
+    logs = results.get("editor_logs") or []
+    warnings = results.get("audit_warnings") or []
+    entries = [
+        {**log, "source": "audit log"}
+        for log in logs
+        if log.get("agent") in agent_names or log.get("step") in agent_names
+    ]
+    entries.extend(
+        {**warning, "source": "unresolved warning"}
+        for warning in warnings
+        if warning.get("agent") in agent_names or warning.get("step") in agent_names
+    )
+    return entries
+
+
+def render_compact_audit(entries: list[dict], heading: str) -> None:
+    st.markdown(f"#### {heading}")
+    if not entries:
+        st.caption("No audit feedback recorded for this board yet.")
+        return
+
+    latest = entries[-3:]
+    for entry in latest:
+        approved = entry.get("approved")
+        agent_label = friendly_agent_name(entry.get("agent") or entry.get("step"))
+        status = approval_label(approved)
+        feedback = entry.get("feedback") or "No detailed feedback provided."
+        if approved is False:
+            st.warning(f"{agent_label}: {status}")
+        elif approved is True:
+            st.success(f"{agent_label}: {status}")
+        else:
+            st.warning(f"{agent_label}: {status}")
+        st.caption(feedback_preview(feedback))
+
+        feedback_items = entry.get("audit_feedback") or []
+        fixes = entry.get("recommended_fixes") or entry.get("suggestions") or []
+        if feedback or feedback_items or fixes:
+            with st.expander("Audit details", expanded=False):
+                st.write(feedback)
+                for item in feedback_items:
+                    st.write(item)
+                for fix in fixes:
+                    st.write(fix)
 
 
 def render_evidence_items(
@@ -359,12 +480,12 @@ def render_evidence_items(
         bias = item.get("bias_category") or ""
         quote = item.get("quote") or ""
         meta = " | ".join(part for part in [published, bias] if part)
-        link = f"[{source}]({url})" if url else source
-        st.markdown(
-            f'<div class="source-line">{link}<br>'
-            f'<span class="small-muted">{title} {meta}</span></div>',
-            unsafe_allow_html=True,
-        )
+        if url:
+            st.markdown(f"- [{source}]({url})")
+        else:
+            st.markdown(f"- {source}")
+        if title or meta:
+            st.caption(" | ".join(part for part in [title, meta] if part))
         if quote:
             st.caption(f'"{quote}"')
 
@@ -580,42 +701,155 @@ def render_consensus_and_timeline(facts: dict) -> None:
             st.markdown(f"- {event}")
 
 
-def render_disputes(facts: dict) -> None:
+def render_disputes(facts: dict, results: dict | None = None) -> None:
     disputes = facts.get("disputed_claims") or []
-    st.markdown("### Disputes")
+    st.markdown("### Dispute board")
+    st.caption(
+        "Contested claims are shown without implying which side is correct. Evidence limits are called out when available."
+    )
     if not disputes:
-        st.success(
-            "No major contradictory claims were identified in the selected sources."
-        )
+        st.success("No major disputes found in the selected sources.")
+        if results:
+            render_compact_audit(
+                audit_entries_for(results, {"dispute_agent", "dispute"}),
+                "Dispute Agent audit",
+            )
         return
 
+    metric_cols = st.columns(3)
+    metric_cols[0].metric("Disputes", len(disputes))
+    metric_cols[1].metric(
+        "Side A evidence",
+        sum(count_items(item.get("side_a_evidence")) for item in disputes),
+    )
+    metric_cols[2].metric(
+        "Side B evidence",
+        sum(count_items(item.get("side_b_evidence")) for item in disputes),
+    )
+
+    if results:
+        render_compact_audit(
+            audit_entries_for(results, {"dispute_agent", "dispute"}),
+            "Dispute Agent audit",
+        )
+
     for idx, item in enumerate(disputes, 1):
+        title = item.get("dispute_question") or item.get("claim", "Contested claim")
         with st.expander(
-            f"{idx}. {item.get('claim', 'Contested claim')}", expanded=idx == 1
+            f"{idx}. {title}",
+            expanded=idx == 1,
         ):
+            if item.get("claim") and item.get("claim") != title:
+                st.markdown(f"**Claim:** {item.get('claim')}")
+            if item.get("evidence_warning"):
+                st.warning(item["evidence_warning"])
+
+            side_a_evidence = item.get("side_a_evidence", [])
+            side_b_evidence = item.get("side_b_evidence", [])
+            side_a_count = count_items(side_a_evidence)
+            side_b_count = count_items(side_b_evidence)
+            balance_label, balance_score = evidence_balance_label(
+                side_a_count, side_b_count
+            )
+            st.markdown("#### Evidence balance")
+            balance_cols = st.columns([1, 1, 2])
+            balance_cols[0].metric("Side A evidence", side_a_count)
+            balance_cols[1].metric("Side B evidence", side_b_count)
+            with balance_cols[2]:
+                st.caption(balance_label)
+                st.progress(balance_score)
+
             left, right = st.columns(2)
             with left:
                 st.markdown("#### Side A")
+                side_a_support, side_a_state = support_state(
+                    item.get("side_a_support_level"), side_a_evidence
+                )
+                render_chips(
+                    [
+                        (f"{count_items(side_a_evidence)} evidence items", side_a_state),
+                        (side_a_support, side_a_state),
+                    ]
+                )
                 st.write(item.get("side_a_assertion", ""))
                 st.caption(f"Sources: {join_or_dash(item.get('side_a_sources'))}")
-                render_evidence_items(
-                    item.get("side_a_evidence", []), "Side A evidence", 3
-                )
+                render_evidence_items(side_a_evidence, "Side A evidence", 4)
             with right:
                 st.markdown("#### Side B")
+                side_b_support, side_b_state = support_state(
+                    item.get("side_b_support_level"), side_b_evidence
+                )
+                render_chips(
+                    [
+                        (f"{count_items(side_b_evidence)} evidence items", side_b_state),
+                        (side_b_support, side_b_state),
+                    ]
+                )
                 st.write(item.get("side_b_assertion", ""))
                 st.caption(f"Sources: {join_or_dash(item.get('side_b_sources'))}")
-                render_evidence_items(
-                    item.get("side_b_evidence", []), "Side B evidence", 3
-                )
+                render_evidence_items(side_b_evidence, "Side B evidence", 4)
 
 
-def render_perspectives(narratives: dict) -> None:
+def render_perspectives(narratives: dict, results: dict | None = None) -> None:
     profiles = narratives.get("profiles") or []
-    st.markdown("### Perspectives")
+    st.markdown("### Perspective board")
+    axis = narratives.get("classification_axis") or ""
+    if axis:
+        st.info(
+            f"Selected perspective axis: {axis}. This grouping is based on the article set."
+        )
+    st.caption(
+        "Narratives are grouped by the best-supported classification axis. Inferences are labelled separately from reported perspectives."
+    )
+
+    unsupported = narratives.get("unsupported_perspectives") or []
+    if unsupported:
+        with st.expander("Unsupported but relevant perspectives", expanded=True):
+            for item in unsupported:
+                st.warning(item)
+
+    if results:
+        render_compact_audit(
+            audit_entries_for(results, {"bias_agent", "bias_agent_audit"}),
+            "Perspective Agent audit",
+        )
+
     if not profiles:
-        st.info("No perspective profiles were found.")
+        st.info("No perspective profiles returned yet.")
         return
+
+    import pandas as pd
+
+    coverage_rows = []
+    for profile in profiles:
+        evidence = profile.get("evidence") or []
+        representative_sources = profile.get("representative_sources") or []
+        support_status = profile.get("support_status") or (
+            "analytical inference"
+            if profile.get("is_speculative")
+            else "reported perspective from sources"
+        )
+        coverage_rows.append(
+            {
+                "Perspective group": profile.get("perspective_group", "Perspective"),
+                "Support status": support_status,
+                "Evidence": count_items(evidence),
+                "Sources": count_items(representative_sources),
+                "Inference?": "Yes"
+                if profile.get("analytical_inference") or profile.get("is_speculative")
+                else "No",
+                "Unsupported warning?": "Yes"
+                if profile.get("unsupported_warning")
+                else "No",
+            }
+        )
+
+    st.markdown("#### Coverage overview")
+    st.dataframe(
+        pd.DataFrame(coverage_rows),
+        use_container_width=True,
+        hide_index=True,
+    )
 
     cols = st.columns(min(3, len(profiles)))
     for idx, profile in enumerate(profiles):
@@ -625,15 +859,46 @@ def render_perspectives(narratives: dict) -> None:
                 title = f"{title} (speculative)"
             with st.container(border=True):
                 st.markdown(f"#### {title}")
+                support_status = profile.get("support_status") or (
+                    "analytical inference"
+                    if profile.get("is_speculative")
+                    else "reported perspective from sources"
+                )
+                support_lower = support_status.lower()
+                support_chip = "warn" if "inference" in support_lower else "good"
+                chips = [(support_status, support_chip)]
+                evidence = profile.get("evidence", [])
+                evidence_state = "" if evidence else "warn"
+                chips.append((f"{count_items(evidence)} evidence items", evidence_state))
+                if profile.get("unsupported_warning"):
+                    chips.append(("not enough source support found", "warn"))
+                render_chips(chips)
+
                 st.write(profile.get("core_narrative", ""))
                 st.markdown("**Arguments**")
                 for arg in profile.get("key_arguments", []):
                     st.markdown(f"- {arg}")
+
+                if profile.get("analytical_inference"):
+                    st.warning("Analytical inference, not direct reporting.")
+                    st.write(profile["analytical_inference"])
+
+                if profile.get("unsupported_warning"):
+                    st.warning(profile["unsupported_warning"])
+
                 omissions = profile.get("notable_omissions") or []
                 if omissions:
                     st.markdown("**Notable omissions**")
                     for omission in omissions:
                         st.markdown(f"- {omission}")
+                if profile.get("representative_sources"):
+                    st.caption(
+                        "Representative sources: "
+                        + join_or_dash(profile.get("representative_sources"))
+                    )
+                if evidence:
+                    with st.expander("Evidence trail", expanded=False):
+                        render_evidence_items(evidence, "Perspective evidence", 4)
                 if profile.get("common_emotional_triggers"):
                     st.caption(
                         "Framing terms: "
@@ -724,12 +989,13 @@ def render_audit_trail(results: dict) -> None:
     if warnings:
         st.markdown("### Unresolved warnings")
         for warning in warnings:
-            st.warning(f"{warning.get('agent')}: {warning.get('feedback')}")
+            agent_label = friendly_agent_name(warning.get("agent") or warning.get("step"))
+            st.warning(f"{agent_label}: {warning.get('feedback')}")
             fixes = warning.get("recommended_fixes") or []
             if fixes:
                 with st.expander("Recommended fixes", expanded=False):
                     for fix in fixes:
-                        st.markdown(f"- {fix}")
+                        st.write(fix)
 
     st.markdown("### Audit loop")
     if not logs:
@@ -740,11 +1006,11 @@ def render_audit_trail(results: dict) -> None:
 
     rows = [
         {
-            "Agent": log.get("agent", ""),
-            "Step": log.get("step", ""),
+            "Agent": friendly_agent_name(log.get("agent")),
+            "Stage": friendly_agent_name(log.get("step")),
             "Attempt": log.get("attempt", ""),
-            "Approved": log.get("approved", False),
-            "Feedback": log.get("feedback", ""),
+            "Status": approval_label(log.get("approved")),
+            "Feedback Preview": feedback_preview(log.get("feedback", "")),
         }
         for log in logs
     ]
@@ -752,21 +1018,25 @@ def render_audit_trail(results: dict) -> None:
 
     for log in logs:
         approved = log.get("approved", False)
-        label = "approved" if approved else "rejected"
+        label = approval_label(approved)
+        agent_label = friendly_agent_name(log.get("agent"))
         with st.expander(
-            f"{log.get('agent', 'agent')} attempt {log.get('attempt', '')}: {label}",
+            f"{agent_label} attempt {log.get('attempt', '')}: {label}",
             expanded=not approved,
         ):
+            if log.get("feedback"):
+                st.markdown("**Full feedback**")
+                st.write(log["feedback"])
             feedback_items = log.get("audit_feedback") or []
             if feedback_items:
                 st.markdown("**Audit feedback**")
                 for item in feedback_items:
-                    st.markdown(f"- {item}")
+                    st.write(item)
             fixes = log.get("recommended_fixes") or []
             if fixes:
                 st.markdown("**Recommended fixes**")
                 for fix in fixes:
-                    st.markdown(f"- {fix}")
+                    st.write(fix)
 
 
 def worker_thread_fn(
@@ -1134,11 +1404,22 @@ if st.session_state.get("awaiting_confirmation"):
     confirmed_model = st.session_state["confirmed_model"]
 
     with st.container(border=True):
-        st.warning(
-            "⚠️ **Input validation check required**: The Input Check Agent flagged this query."
-        )
-
         issue_type = review.get("input_issue_type", "unsuitable")
+        is_clear_refinement = (
+            issue_type == "clear_news_query"
+            and review.get("is_safe", True)
+            and review.get("is_news_relevant", True)
+            and not review.get("needs_user_confirmation", False)
+        )
+        if is_clear_refinement:
+            st.info(
+                "**Query refinement available**: The Input Check Agent found a clearer formulation."
+            )
+        else:
+            st.warning(
+                "⚠️ **Input validation check required**: The Input Check Agent flagged this query."
+            )
+
         user_msg = (
             review.get("user_message")
             or review.get("rejection_reason")
@@ -1156,8 +1437,11 @@ if st.session_state.get("awaiting_confirmation"):
         btn_cols = st.columns([1, 1, 1])
 
         if suggested_q != original_topic:
+            refined_button_label = (
+                "Use refined query" if is_clear_refinement else "Use suggested query"
+            )
             if btn_cols[0].button(
-                "Use suggested query", type="primary", use_container_width=True
+                refined_button_label, type="primary", use_container_width=True
             ):
                 st.session_state["awaiting_confirmation"] = False
                 start_workflow(
@@ -1379,6 +1663,11 @@ with tab_perspectives:
     recruitment = results.get("recruitment") or {}
     recruit_dispute = recruitment.get("recruit_dispute", True)
     recruit_perspective = recruitment.get("recruit_perspective", True)
+    facts_data = results.get("facts") or {}
+    narratives = results.get("narratives") or {}
+    dispute_count = count_items(facts_data.get("disputed_claims"))
+    profile_count = count_items(narratives.get("profiles"))
+    axis = narratives.get("classification_axis") or "Pending"
 
     if not recruitment:
         st.markdown(
@@ -1389,9 +1678,21 @@ with tab_perspectives:
             unsafe_allow_html=True,
         )
     else:
+        st.markdown("### Perspectives & Disputes")
+        overview_cols = st.columns(4)
+        overview_cols[0].metric(
+            "Dispute Agent", "Recruited" if recruit_dispute else "Skipped"
+        )
+        overview_cols[1].metric("Disputes", dispute_count)
+        overview_cols[2].metric(
+            "Perspective Agent", "Recruited" if recruit_perspective else "Skipped"
+        )
+        overview_cols[3].metric("Perspective groups", profile_count)
+        if recruit_perspective:
+            st.caption(f"Perspective axis: {axis}")
+
         # Disputes Module
         if recruit_dispute:
-            facts_data = results.get("facts") or {}
             disputes = facts_data.get("disputed_claims") or []
             if not disputes and step_statuses.get("dispute") in ["queued", "running"]:
                 st.markdown(
@@ -1402,17 +1703,16 @@ with tab_perspectives:
                     unsafe_allow_html=True,
                 )
             else:
-                render_disputes(facts_data)
+                render_disputes(facts_data, results)
         else:
             st.info(
-                "Dispute mapping was skipped for this topic (recruiter determined it is non-recruited)."
+                "Dispute Agent was skipped by the Recruiter Agent."
             )
 
         st.divider()
 
         # Perspectives Module
         if recruit_perspective:
-            narratives = results.get("narratives") or {}
             profiles = narratives.get("profiles") or []
             if not profiles and step_statuses.get("bias_agent") in [
                 "queued",
@@ -1426,10 +1726,10 @@ with tab_perspectives:
                     unsafe_allow_html=True,
                 )
             else:
-                render_perspectives(narratives)
+                render_perspectives(narratives, results)
         else:
             st.info(
-                "Media perspective profiling was skipped for this topic (recruiter determined it is non-recruited)."
+                "Perspective Agent was skipped by the Recruiter Agent."
             )
 
 with tab_experts:

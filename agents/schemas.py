@@ -65,12 +65,16 @@ class FactItem(pydantic.BaseModel):
 
 class DisputeItem(pydantic.BaseModel):
     claim: str
+    dispute_question: str = ""
     side_a_assertion: str
     side_a_sources: list[str] = pydantic.Field(default_factory=list)
     side_a_evidence: list[EvidenceItem] = pydantic.Field(default_factory=list)
+    side_a_support_level: str = ""
     side_b_assertion: str
     side_b_sources: list[str] = pydantic.Field(default_factory=list)
     side_b_evidence: list[EvidenceItem] = pydantic.Field(default_factory=list)
+    side_b_support_level: str = ""
+    evidence_warning: str = ""
 
 
 class TimelineEvent(pydantic.BaseModel):
@@ -96,11 +100,16 @@ class NarrativeProfile(pydantic.BaseModel):
     representative_sources: list[str] = pydantic.Field(default_factory=list)
     evidence: list[EvidenceItem] = pydantic.Field(default_factory=list)
     is_speculative: bool = False
+    support_status: str = ""
+    analytical_inference: str = ""
+    unsupported_warning: str = ""
 
 
 class PerspectiveProfile(pydantic.BaseModel):
+    classification_axis: str = ""
     profiles: list[NarrativeProfile]
     key_rhetorical_differences: str
+    unsupported_perspectives: list[str] = pydantic.Field(default_factory=list)
 
 
 # --- Expert Panel Models ---
