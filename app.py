@@ -465,7 +465,7 @@ def render_compact_audit(entries: list[dict], heading: str) -> None:
 
 
 def render_evidence_items(
-    evidence: list[dict], heading: str = "Evidence", max_items: int = 4
+    evidence: list[dict], heading: str = "Evidence", max_items: int = 4, show_bias: bool = True
 ) -> None:
     st.markdown(f"**{heading}**")
     if not evidence:
@@ -477,15 +477,15 @@ def render_evidence_items(
         title = item.get("title") or ""
         url = item.get("url") or ""
         published = item.get("published_date") or ""
-        bias = item.get("bias_category") or ""
+        bias = (item.get("bias_category") or "") if show_bias else ""
         quote = item.get("quote") or ""
         meta = " | ".join(part for part in [published, bias] if part)
-        if url:
-            st.markdown(f"- [{source}]({url})")
-        else:
-            st.markdown(f"- {source}")
-        if title or meta:
-            st.caption(" | ".join(part for part in [title, meta] if part))
+        link = f'<a href="{url}" target="_blank">{source}</a>' if url else source
+        st.markdown(
+            f'<div class="source-line">{link}<br>'
+            f'<span class="small-muted">{title} {meta}</span></div>',
+            unsafe_allow_html=True,
+        )
         if quote:
             st.caption(f'"{quote}"')
 
@@ -632,7 +632,18 @@ def render_public_summary(results: dict) -> None:
         if takeaways:
             st.markdown("#### Key takeaways")
             for takeaway in takeaways:
-                st.markdown(f"- {takeaway}")
+                if isinstance(takeaway, dict):
+                    st.markdown(f"- {takeaway.get('point', '')}")
+                    links = []
+                    for item in takeaway.get("evidence") or []:
+                        source = item.get("source") or "Source"
+                        url = item.get("url") or ""
+                        if url:
+                            links.append(f"[{source}]({url})")
+                    if links:
+                        st.caption("Sources: " + " · ".join(links))
+                else:
+                    st.markdown(f"- {takeaway}")
 
     chips = []
     status = str(articles_data.get("search_status", "verified")).lower()
@@ -671,16 +682,14 @@ def render_consensus_and_timeline(facts: dict) -> None:
         with st.expander(
             f"{idx}. {item.get('claim', 'Untitled fact')}", expanded=idx <= 2
         ):
-            cols = st.columns([3, 1])
-            with cols[0]:
-                st.markdown(
-                    f"**Sources:** {join_or_dash(item.get('supporting_sources'))}"
-                )
-                render_evidence_items(item.get("evidence", []))
-            with cols[1]:
-                score = clamp_score(item.get("cross_verification_score"))
-                st.metric("Cross-check", f"{score:.0%}")
-                st.progress(score)
+            st.markdown(
+                f"**Sources:** {join_or_dash(item.get('supporting_sources'))}"
+            )
+            render_evidence_items(item.get("evidence", []), show_bias=False)
+            explanation = item.get("explanation")
+            if explanation:
+                with st.expander("Why this is considered a fact", expanded=False):
+                    st.write(explanation)
 
     st.markdown("### Timeline")
     structured_timeline = facts.get("timeline") or []
@@ -691,7 +700,7 @@ def render_consensus_and_timeline(facts: dict) -> None:
                 expanded=False,
             ):
                 render_evidence_items(
-                    event.get("evidence", []), heading="Timeline evidence"
+                    event.get("evidence", []), heading="Timeline evidence", show_bias=False
                 )
     else:
         timeline = facts.get("timeline_events") or []
@@ -909,6 +918,53 @@ def render_perspectives(narratives: dict, results: dict | None = None) -> None:
         st.info(narratives["key_rhetorical_differences"])
 
 
+def render_scenario_details(scenario: dict) -> None:
+    if scenario.get("likelihood_band"):
+        st.caption(scenario["likelihood_band"])
+    st.write(scenario.get("description", ""))
+    triggers = scenario.get("trigger_conditions") or []
+    if triggers:
+        st.markdown("**Trigger conditions**")
+        for trigger in triggers:
+            st.markdown(f"- {trigger}")
+    assumptions = scenario.get("assumptions") or []
+    if assumptions:
+        st.markdown("**Assumptions**")
+        for assumption in assumptions:
+            st.markdown(f"- {assumption}")
+    render_evidence_items(scenario.get("supporting_evidence") or [], "Evidence", 3)
+
+
+def render_outlook_scenarios(outlook: dict) -> None:
+    most_likely = outlook.get("most_likely_scenario")
+    if isinstance(most_likely, dict) and most_likely:
+        st.markdown(
+            f"**Most likely scenario: {most_likely.get('scenario_title', '')}**"
+        )
+        render_scenario_details(most_likely)
+    elif isinstance(most_likely, str) and most_likely and most_likely != "N/A":
+        st.markdown("**Most likely scenario**")
+        st.write(most_likely)
+    else:
+        st.info("No future outlook scenarios available.")
+
+    for scenario in outlook.get("alternative_scenarios") or []:
+        with st.expander(
+            scenario.get("scenario_title", "Alternative scenario"), expanded=False
+        ):
+            render_scenario_details(scenario)
+
+    indicators = outlook.get("monitoring_indicators") or []
+    if indicators:
+        st.markdown("**Monitoring indicators**")
+        for indicator in indicators:
+            st.markdown(f"- {indicator}")
+    if outlook.get("time_horizon"):
+        st.caption(f"Time horizon: {outlook['time_horizon']}")
+    if outlook.get("confidence_statement"):
+        st.caption(outlook["confidence_statement"])
+
+
 def render_experts_and_outlook(experts: dict, outlook: dict) -> None:
     st.markdown("### Expert analysis")
     opinions = experts.get("expert_opinions") or []
@@ -923,6 +979,12 @@ def render_experts_and_outlook(experts: dict, outlook: dict) -> None:
                 expanded=idx == 1,
             ):
                 st.write(opinion.get("commentary", ""))
+                if opinion.get("supporting_evidence"):
+                    render_evidence_items(
+                        opinion.get("supporting_evidence"),
+                        heading="Supporting evidence",
+                        show_bias=False,
+                    )
                 if opinion.get("cited_references"):
                     st.markdown("**Cited anchors**")
                     for ref in opinion.get("cited_references", []):
@@ -935,32 +997,7 @@ def render_experts_and_outlook(experts: dict, outlook: dict) -> None:
             st.success(experts["roundtable_summary"])
 
     st.markdown("### Future outlook")
-    if (
-        outlook.get("most_likely_scenario")
-        and outlook.get("most_likely_scenario") != "N/A"
-    ):
-        st.markdown("**Most likely scenario**")
-        st.write(outlook["most_likely_scenario"])
-    else:
-        st.info("No future outlook scenarios available.")
-
-    for scenario in outlook.get("alternative_scenarios") or []:
-        with st.expander(
-            scenario.get("scenario_title", "Alternative scenario"), expanded=False
-        ):
-            if scenario.get("likelihood_band"):
-                st.caption(scenario["likelihood_band"])
-            st.write(scenario.get("description", ""))
-            for trigger in scenario.get("trigger_conditions", []):
-                st.markdown(f"- {trigger}")
-
-    indicators = outlook.get("monitoring_indicators") or []
-    if indicators:
-        st.markdown("**Monitoring indicators**")
-        for indicator in indicators:
-            st.markdown(f"- {indicator}")
-    if outlook.get("confidence_statement"):
-        st.caption(outlook["confidence_statement"])
+    render_outlook_scenarios(outlook)
 
 
 def render_recruitment(recruitment: dict) -> None:
@@ -977,10 +1014,6 @@ def render_recruitment(recruitment: dict) -> None:
         "Outlook", "Yes" if recruitment.get("recruit_future_outlook") else "No"
     )
     st.write(recruitment.get("recruitment_justification", ""))
-    if recruitment.get("perspective_axis"):
-        st.caption(f"Perspective axis: {recruitment['perspective_axis']}")
-    if recruitment.get("expert_domains"):
-        st.caption("Expert domains: " + ", ".join(recruitment["expert_domains"]))
 
 
 def render_audit_trail(results: dict) -> None:
@@ -1245,10 +1278,10 @@ with st.expander("Settings", expanded=False):
         model_display = st.selectbox(
             "Model Selection",
             options=[
+                "Gemma 4 (Open Source)",
                 "Gemini 3.5 Flash (High)",
                 "Gemini 3.1 Flash Lite (Low-Cost)",
                 "Gemini 3.5 Pro (Premium)",
-                "Gemma 2 9B (Open Source)",
             ],
             index=0,
             help="Select the underlying AI model for the agents.",
@@ -1257,7 +1290,7 @@ with st.expander("Settings", expanded=False):
             "Gemini 3.5 Flash (High)": "gemini-3.5-flash",
             "Gemini 3.1 Flash Lite (Low-Cost)": "gemini-3.1-flash-lite",
             "Gemini 3.5 Pro (Premium)": "gemini-3.5-pro",
-            "Gemma 2 9B (Open Source)": "gemma2-9b-it",
+            "Gemma 4 (Open Source)": "gemma-4-26b-a4b-it",
         }
         selected_model = MODEL_MAPPING[model_display]
     with settings_col_2:
@@ -1780,28 +1813,7 @@ with tab_experts:
                     )
                 else:
                     st.markdown("### Future outlook")
-                    if (
-                        outlook.get("most_likely_scenario")
-                        and outlook.get("most_likely_scenario") != "N/A"
-                    ):
-                        st.markdown("**Most likely scenario**")
-                        st.write(outlook["most_likely_scenario"])
-                    # alternative scenarios
-                    for scenario in outlook.get("alternative_scenarios") or []:
-                        with st.expander(
-                            scenario.get("scenario_title", "Alternative scenario"),
-                            expanded=False,
-                        ):
-                            if scenario.get("likelihood_band"):
-                                st.caption(scenario["likelihood_band"])
-                            st.write(scenario.get("description", ""))
-                            for trigger in scenario.get("trigger_conditions", []):
-                                st.markdown(f"- {trigger}")
-                    indicators = outlook.get("monitoring_indicators") or []
-                    if indicators:
-                        st.markdown("**Monitoring indicators**")
-                        for ind in indicators:
-                            st.markdown(f"- {ind}")
+                    render_outlook_scenarios(outlook)
             else:
                 st.info("Future scenario modeling was skipped for this topic.")
 

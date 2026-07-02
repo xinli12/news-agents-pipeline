@@ -75,10 +75,9 @@ hackathon/
 │   ├── public_reporter_agent.py  # Public-facing summary
 │   ├── public_editor_agent.py    # Consolidated folded Markdown report
 │   ├── qa_agent.py               # Follow-up Q&A for completed reports
-│   ├── eval_agent.py             # Optional LLM-as-judge helper
+│   ├── evidence_verifier.py      # Deterministic evidence/citation checks
 │   ├── schemas.py                # Pydantic output contracts
 │   └── app_utils/                # Telemetry and API typing helpers
-├── reference_materials/          # Expert-agent context documents
 ├── tests/
 │   ├── unit/                     # Schema and helper tests
 │   ├── integration/              # ADK agent and FastAPI server tests

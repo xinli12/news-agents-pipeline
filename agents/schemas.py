@@ -60,7 +60,8 @@ class FactItem(pydantic.BaseModel):
     claim: str
     supporting_sources: list[str] = pydantic.Field(default_factory=list)
     evidence: list[EvidenceItem] = pydantic.Field(default_factory=list)
-    cross_verification_score: float  # 0.0 to 1.0 based on cross-source validation
+    explanation: str  # Explains why this claim is considered a fact based on evidence.
+    cross_verification_score: float = 0.0
 
 
 class DisputeItem(pydantic.BaseModel):
@@ -85,7 +86,6 @@ class TimelineEvent(pydantic.BaseModel):
 
 class FactConsensusMap(pydantic.BaseModel):
     consensus_facts: list[FactItem] = pydantic.Field(default_factory=list)
-    disputed_claims: list[DisputeItem] = pydantic.Field(default_factory=list)
     timeline_events: list[str] = pydantic.Field(default_factory=list)
     timeline: list[TimelineEvent] = pydantic.Field(default_factory=list)
 
@@ -117,8 +117,18 @@ class ExpertOpinion(pydantic.BaseModel):
     expert_name: str  # The professional title/role of the expert (e.g. "Political & Constitutional Law Analyst") instead of a person's name
     expertise_area: str  # e.g., "Political Science", "Economics", "Media Literacy"
     commentary: str
-    recommended_reading_or_context: list[str]
-    cited_references: list[str]  # References cited from reference_materials
+    recommended_reading_or_context: list[str]  # Recommended reading or background context, formatted as Markdown links ([Description](URL)) or URLs
+    cited_references: list[str]  # References/sources cited, formatted as Markdown links ([Title](URL)) or URLs
+    supporting_evidence: list[EvidenceItem] = pydantic.Field(default_factory=list)
+
+
+class ExpertDomainSelection(pydantic.BaseModel):
+    domains: list[str]  # 2-3 professional role titles, e.g. "Constitutional Law Specialist"
+    selection_rationale: str = ""
+
+
+class RoundtableSummary(pydantic.BaseModel):
+    roundtable_summary: str
 
 
 class ExpertPanelCommentary(pydantic.BaseModel):
@@ -126,26 +136,16 @@ class ExpertPanelCommentary(pydantic.BaseModel):
     roundtable_summary: str
 
 
-# --- Editor-in-Chief Model ---
-class EditorReviewResult(pydantic.BaseModel):
-    is_approved: bool
-    feedback: str
-    revision_suggestions: list[str]
-
-
-# --- Evaluation Model ---
-class EvaluationResult(pydantic.BaseModel):
-    objectivity_score: float  # 0.0 to 1.0
-    factuality_score: float  # 0.0 to 1.0
-    coverage_score: float  # 0.0 to 1.0
-    evaluation_reasoning: str
-
-
 # --- Public Summary Report Model ---
+class ReportTakeaway(pydantic.BaseModel):
+    point: str
+    evidence: list[EvidenceItem] = pydantic.Field(default_factory=list)
+
+
 class PublicReport(pydantic.BaseModel):
     title: str
     lead_paragraph: str
-    key_takeaways: list[str]
+    key_takeaways: list[ReportTakeaway]
     narrative_summary: str
     future_outlook: str
 
@@ -154,13 +154,7 @@ class PublicReport(pydantic.BaseModel):
 class RecruitmentResult(pydantic.BaseModel):
     recruit_dispute: bool
     recruit_perspective: bool
-    perspective_axis: str | None = (
-        None  # Deprecated: No longer set by recruiter, decided by Perspective Agent dynamically
-    )
     recruit_expert: bool
-    expert_domains: list[str] | None = (
-        None  # Deprecated: No longer set by recruiter, decided by Expert Agent dynamically
-    )
     recruit_future_outlook: bool
     recruitment_justification: str
     complexity_level: str = "moderate"
@@ -171,10 +165,8 @@ class RecruitmentResult(pydantic.BaseModel):
 # --- Generic Audit Agent Model ---
 class AuditResult(pydantic.BaseModel):
     is_approved: bool
-    feedback: str = ""
     audit_feedback: list[str] = pydantic.Field(default_factory=list)
     recommended_fixes: list[str] = pydantic.Field(default_factory=list)
-    revision_suggestions: list[str] = pydantic.Field(default_factory=list)
 
 
 # --- Future Outlook Models ---
@@ -183,13 +175,16 @@ class ScenarioItem(pydantic.BaseModel):
     description: str
     trigger_conditions: list[str] = pydantic.Field(default_factory=list)
     likelihood_band: str = ""
+    supporting_evidence: list[EvidenceItem] = pydantic.Field(default_factory=list)
+    assumptions: list[str] = pydantic.Field(default_factory=list)
 
 
 class FutureOutlookResult(pydantic.BaseModel):
-    most_likely_scenario: str
+    most_likely_scenario: ScenarioItem | None = None
     alternative_scenarios: list[ScenarioItem] = pydantic.Field(default_factory=list)
     monitoring_indicators: list[str] = pydantic.Field(default_factory=list)
     confidence_statement: str = ""
+    time_horizon: str = ""
 
 
 # --- Dispute Agent Models ---

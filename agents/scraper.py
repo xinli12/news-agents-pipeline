@@ -5,6 +5,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 from bs4 import BeautifulSoup
 
+from agents.evidence_verifier import register_article_full_text
+
+_SCRAPE_ERROR_PREFIXES = ("HTTP Error", "URL Error", "Scraping error", "Invalid URL")
+
 
 def scrape_article_text(url: str, timeout: int = 10) -> str:
     """Fetches the HTML of the URL and extracts clean paragraph text.
@@ -107,6 +111,10 @@ def scrape_articles_parallel(urls: list[str], max_workers: int = 15) -> dict[str
             try:
                 content = future.result()
                 results[url] = content
+                if content and not content.startswith(_SCRAPE_ERROR_PREFIXES):
+                    # Make the full text available to the evidence verifier so quotes
+                    # can be checked against more than the short snippet.
+                    register_article_full_text(url, content)
             except Exception as e:
                 results[url] = f"Error in threading execution: {e!s}"
 
