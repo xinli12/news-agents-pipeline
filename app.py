@@ -983,6 +983,50 @@ def render_recruitment(recruitment: dict) -> None:
         st.caption("Expert domains: " + ", ".join(recruitment["expert_domains"]))
 
 
+def render_deterministic_evidence_audit(results: dict) -> None:
+    st.markdown("### Deterministic Evidence Audit")
+    evidence_audit = results.get("evidence_audit") or {}
+    if not evidence_audit:
+        st.caption(
+            "Deterministic evidence checks will appear after facts, disputes, and perspectives finish."
+        )
+        return
+
+    status = evidence_audit.get("status", "not_available")
+    summary = evidence_audit.get("summary") or {}
+
+    if status == "passed":
+        st.success("Deterministic source and quote checks passed.")
+    elif status == "warnings":
+        st.warning(
+            "Deterministic evidence checks found non-blocking traceability warnings."
+        )
+    else:
+        st.caption("Deterministic evidence checks are not available for this run yet.")
+
+    metric_values = [
+        ("Evidence items checked", summary.get("total_evidence_items_checked", 0)),
+        ("Missing URLs", summary.get("missing_url_count", 0)),
+        ("Missing quotes", summary.get("missing_quote_count", 0)),
+        ("Quote match warnings", summary.get("quote_match_warning_count", 0)),
+        ("One-sided disputes", summary.get("one_sided_dispute_count", 0)),
+        ("Wire/duplicate warnings", summary.get("wire_duplicate_warning_count", 0)),
+    ]
+    first_row = st.columns(3)
+    second_row = st.columns(3)
+    for column, (label, value) in zip(
+        [*first_row, *second_row], metric_values, strict=True
+    ):
+        column.metric(label, value)
+
+    warnings = evidence_audit.get("warnings") or []
+    with st.expander("Deterministic evidence warnings", expanded=status == "warnings"):
+        if not warnings:
+            st.caption("No deterministic evidence warnings recorded.")
+        for warning in warnings:
+            st.write(warning)
+
+
 def render_audit_trail(results: dict) -> None:
     warnings = results.get("audit_warnings") or []
     logs = results.get("editor_logs") or []
@@ -996,6 +1040,8 @@ def render_audit_trail(results: dict) -> None:
                 with st.expander("Recommended fixes", expanded=False):
                     for fix in fixes:
                         st.write(fix)
+
+    render_deterministic_evidence_audit(results)
 
     st.markdown("### Audit loop")
     if not logs:
@@ -1300,6 +1346,7 @@ def start_workflow(
             "public_editor_report": "",
             "editor_logs": [],
             "audit_warnings": [],
+            "evidence_audit": {},
             "is_approved": True,
         },
         "control": {"paused": False, "stopped": False},
