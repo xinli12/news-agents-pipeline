@@ -63,7 +63,7 @@ def test_fact_schema_supports_traceable_evidence() -> None:
         claim="The policy is under public review.",
         supporting_sources=["Reuters"],
         evidence=[evidence],
-        cross_verification_score=0.8,
+        explanation="Both Reuters and other independent sources corroborated the policy review announcement.",
     )
     dispute = DisputeItem(
         claim="Whether the policy will raise costs.",
@@ -187,6 +187,114 @@ def test_article_list_schema_supports_search_verification_metadata() -> None:
 
     assert article_list.search_status == "insufficient_corroboration"
     assert article_list.warnings == ["Do not continue without more sources."]
+
+
+def test_expert_and_outlook_schemas_support_evidence_grounding() -> None:
+    from agents.schemas import (
+        EvidenceItem,
+        ExpertOpinion,
+        FutureOutlookResult,
+        ScenarioItem,
+    )
+
+    evidence = EvidenceItem(
+        source="Reuters",
+        title="Example title",
+        url="https://www.reuters.com/example",
+        published_date="2026-06-27",
+        bias_category="Center",
+        quote="Officials said the policy would be reviewed after public comment.",
+    )
+
+    opinion = ExpertOpinion(
+        expert_name="Regulatory Policy Analyst",
+        expertise_area="Public Policy",
+        commentary="The comment period matters because it shapes implementation risk.",
+        recommended_reading_or_context=["Administrative procedure overview"],
+        cited_references=["Public consultation standards"],
+        supporting_evidence=[evidence],
+    )
+    scenario = ScenarioItem(
+        scenario_title="Review proceeds on schedule",
+        description="The agency continues the consultation process.",
+        trigger_conditions=["No injunction is filed"],
+        likelihood_band="plausible if current process continues",
+        supporting_evidence=[evidence],
+        assumptions=["No major procedural delay occurs"],
+    )
+    most_likely = ScenarioItem(
+        scenario_title="Public comment period continues",
+        description="The review continues through the public comment period.",
+        likelihood_band="most likely",
+        supporting_evidence=[evidence],
+    )
+    outlook = FutureOutlookResult(
+        most_likely_scenario=most_likely,
+        alternative_scenarios=[scenario],
+        monitoring_indicators=["New docket filings"],
+        confidence_statement="Evidence is limited to currently available reporting.",
+        time_horizon="next 30-90 days",
+    )
+
+    assert opinion.supporting_evidence[0].url == "https://www.reuters.com/example"
+    assert outlook.most_likely_scenario.supporting_evidence[0].source == "Reuters"
+    assert outlook.alternative_scenarios[0].assumptions == [
+        "No major procedural delay occurs"
+    ]
+
+
+def test_public_report_takeaways_carry_evidence_chain() -> None:
+    from agents.schemas import EvidenceItem, PublicReport, ReportTakeaway
+
+    evidence = EvidenceItem(
+        source="Reuters",
+        url="https://www.reuters.com/example",
+        published_date="2026-06-27",
+        quote="Officials said the policy would be reviewed after public comment.",
+    )
+    report = PublicReport(
+        title="Policy review briefing",
+        lead_paragraph="The policy entered a public review phase.",
+        key_takeaways=[
+            ReportTakeaway(point="The review is underway.", evidence=[evidence])
+        ],
+        narrative_summary="Coverage is broadly consistent across outlets.",
+        future_outlook="Watch for the end of the comment period.",
+    )
+
+    assert report.key_takeaways[0].evidence[0].url == "https://www.reuters.com/example"
+
+
+def test_expert_pipeline_factories() -> None:
+    from agents.expert_agent import (
+        domain_slug,
+        get_domain_expert_agent,
+        get_expert_domain_selector,
+        get_roundtable_summarizer,
+        search_authoritative_data,
+    )
+    from agents.schemas import ExpertDomainSelection, ExpertOpinion, RoundtableSummary
+
+    selector = get_expert_domain_selector("gemini-3.1-flash-lite")
+    assert selector.output_schema == ExpertDomainSelection
+
+    expert = get_domain_expert_agent(
+        "Constitutional Law Specialist", "gemini-3.1-flash-lite"
+    )
+    assert expert.name == "expert_constitutional_law_specialist"
+    assert expert.output_schema == ExpertOpinion
+    assert "Constitutional Law Specialist" in expert.instruction
+    assert search_authoritative_data in expert.tools
+
+    # Simple smoke test for the tool function
+    result = search_authoritative_data("test query")
+    assert isinstance(result, str)
+    assert len(result) > 0
+
+    summarizer = get_roundtable_summarizer("gemini-3.1-flash-lite")
+    assert summarizer.output_schema == RoundtableSummary
+
+    assert domain_slug("AI & Governance Researcher!") == "ai_governance_researcher"
 
 
 def test_search_candidate_pool_deduplicates_wire_clusters() -> None:

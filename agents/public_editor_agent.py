@@ -23,7 +23,11 @@ def get_public_editor_agent(model_name: str | None = None) -> Agent:
             "Timeline details, and Alternative Scenarios) to keep the page clean and prevent cognitive overload.\n"
             "3. If upstream audit warnings are provided, include them in unresolved_warnings and show a concise "
             "reader-facing caveat near the top of the report without exposing raw system logs.\n"
-            "4. Objectivity & Style: Retain completely neutral, non-partisan language throughout. Ensure the layout "
+            "4. Traceability: Keep the evidence chain visible to readers. Attach markdown source links "
+            "([Source Name](url)) to key facts and takeaways using ONLY the URLs provided in the upstream "
+            "outputs, and end the report with a 'Sources' section listing every cited article (source, title, "
+            "date, URL). Never invent or alter URLs.\n"
+            "5. Objectivity & Style: Retain completely neutral, non-partisan language throughout. Ensure the layout "
             "looks professional, structured, and easy to read. Do not include raw JSON or developer logs in the text."
         ),
         output_schema=PublicEditorOutput,

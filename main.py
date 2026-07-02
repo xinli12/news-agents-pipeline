@@ -340,47 +340,11 @@ async def run_cli(topic: str):
                     )
                     console.print()
 
-            elif step == "eval_complete":
-                # Render LLM-as-a-judge results
-                obj_score = payload.get("objectivity_score", 0.0)
-                fact_score = payload.get("factuality_score", 0.0)
-                cov_score = payload.get("coverage_score", 0.0)
-                reasoning = payload.get("evaluation_reasoning", "")
-
-                eval_table = Table(
-                    title="[bold green]🏆 Independent Quality Audit (LLM-as-a-judge)[/bold green]",
-                    expand=True,
-                )
-                eval_table.add_column("Quality Metric", style="cyan")
-                eval_table.add_column("Rating / Score")
-
-                eval_table.add_row(
-                    "Neutral Objectivity Score", make_score_meter(obj_score)
-                )
-                eval_table.add_row(
-                    "Factual Grounding Score", make_score_meter(fact_score)
-                )
-                eval_table.add_row(
-                    "Perspective Coverage Score", make_score_meter(cov_score)
-                )
-
-                console.print(eval_table)
-                console.print()
-                console.print(
-                    Panel(
-                        reasoning,
-                        title="[bold]Auditor Feedback & Analysis[/bold]",
-                        border_style="green",
-                    )
-                )
-                console.print()
-
         # Restart spinner if not a terminal step
         if not step.endswith("_complete") and step not in [
             "editor_approved",
             "editor_rejected",
             "review_failed",
-            "eval_complete",
         ]:
             status_spinner = console.status(
                 "[bold green]Working...[/bold green]", spinner="dots"

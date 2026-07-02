@@ -7,14 +7,14 @@ from google.adk.events import Event
 from agents.coordinator import NewsAnalysisCoordinator
 
 
-def _format_evidence_markdown(evidence: list[dict], indent: str = "  ") -> str:
+def _format_evidence_markdown(evidence: list[dict], indent: str = "  ", show_bias: bool = True) -> str:
     lines = []
     for item in evidence or []:
         source = item.get("source", "Unknown source")
         title = item.get("title", "")
         url = item.get("url", "")
         published = item.get("published_date", "")
-        bias = item.get("bias_category", "")
+        bias = (item.get("bias_category", "")) if show_bias else ""
         quote = item.get("quote", "")
         meta = ", ".join(part for part in [published, bias] if part)
         meta_text = f" ({meta})" if meta else ""
@@ -111,7 +111,18 @@ class NewsAnalysisWorkflowAgent(BaseAgent):
 
                     response_text += "### Key Takeaways\n"
                     for takeaway in public_report.get("key_takeaways", []):
-                        response_text += f"- {takeaway}\n"
+                        if isinstance(takeaway, dict):
+                            response_text += f"- {takeaway.get('point', '')}"
+                            links = [
+                                f"[{item.get('source', 'Source')}]({item.get('url')})"
+                                for item in takeaway.get("evidence") or []
+                                if item.get("url")
+                            ]
+                            if links:
+                                response_text += f" (Sources: {', '.join(links)})"
+                            response_text += "\n"
+                        else:
+                            response_text += f"- {takeaway}\n"
                     response_text += "\n"
 
                     response_text += f"### Perspective Synthesis\n{public_report.get('narrative_summary')}\n\n"
@@ -125,8 +136,11 @@ class NewsAnalysisWorkflowAgent(BaseAgent):
                 for item in facts.get("consensus_facts", []):
                     sources = ", ".join(item.get("supporting_sources") or [])
                     response_text += f"- {item.get('claim')} (Sources: {sources})\n"
+                    explanation = item.get("explanation")
+                    if explanation:
+                        response_text += f"  <details>\n  <summary>Why this is considered a fact</summary>\n  {explanation}\n  </details>\n"
                     evidence_md = _format_evidence_markdown(
-                        item.get("evidence", []), indent="  "
+                        item.get("evidence", []), indent="  ", show_bias=False
                     )
                     if evidence_md:
                         response_text += f"  * Evidence trail:\n{evidence_md}\n"

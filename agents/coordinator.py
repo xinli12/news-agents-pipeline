@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import re
@@ -12,7 +13,15 @@ from google.genai import types
 
 from agents.bias_agent import get_bias_agent
 from agents.dispute_agent import get_dispute_agent
-from agents.expert_agent import get_expert_agent
+from agents.evidence_verifier import (
+    format_verification_report,
+    verify_analysis_evidence,
+)
+from agents.expert_agent import (
+    get_domain_expert_agent,
+    get_expert_domain_selector,
+    get_roundtable_summarizer,
+)
 from agents.fact_agent import get_fact_agent
 from agents.outlook_agent import get_outlook_agent
 from agents.public_editor_agent import get_public_editor_agent
@@ -48,7 +57,7 @@ RECRUITER_AUDIT_CRITERIA = "1. Verify recruitment decisions: only recruit Disput
 
 FACT_AUDIT_CRITERIA = (
     "1. Verify factual neutrality: no evaluative adjectives or loaded terms.\n"
-    "2. Each consensus fact must cite at least two separate bias groups.\n"
+    "2. Each consensus fact must have at least two independent sources and a valid, detailed explanation of why it is considered a fact.\n"
     "3. Verify dates and timelines are chronologically consistent and cited accurately with URLs and short quotes.\n"
     "4. Verify the structured timeline includes evidence objects, not only uncited prose."
 )
@@ -86,21 +95,30 @@ PERSPECTIVE_AUDIT_CRITERIA = (
 )
 
 EXPERT_AUDIT_CRITERIA = (
-    "1. Ensure the selected expert domains match the news topic context and represent appropriate academic/professional perspectives.\n"
-    "2. Ensure each expert commentary cites specific external regulations, economic indicators, or ethical codes.\n"
-    "3. Maintain academic, non-partisan commentary within their designated domain."
+    "1. Ensure the expert's commentary stays within their designated professional domain and matches the news topic context.\n"
+    "2. Ensure the commentary cites specific external regulations, economic indicators, or ethical codes.\n"
+    "3. Maintain academic, non-partisan commentary."
 )
 
 OUTLOOK_AUDIT_CRITERIA = (
     "1. Verify scenario divergence: Most-likely vs Alternative Scenarios must represent distinct logical paths.\n"
     "2. Ensure trigger conditions are specific and observable.\n"
-    "3. Use probabilistic language instead of false certainty."
+    "3. Use probabilistic language instead of false certainty.\n"
+    "4. Ensure scenarios cite upstream evidence and state assumptions/time horizon."
+)
+
+PUBLIC_REPORTER_AUDIT_CRITERIA = (
+    "1. Ensure the public summary only summarizes upstream verified facts, disputes, expert commentary, and scenarios.\n"
+    "2. Ensure it does not introduce new factual claims, stronger certainty, or unsupported causal claims.\n"
+    "3. Preserve material caveats, unresolved audit warnings, and uncertainty in public-friendly language.\n"
+    "4. Every key takeaway must carry an evidence trail (source, URL, quote) copied from upstream outputs."
 )
 
 PUBLIC_EDITOR_AUDIT_CRITERIA = (
     "1. Ensure the highly condensed executive summary is at the absolute top of the page.\n"
     "2. Ensure all detailed sections (disputes, narratives, expert opinions, timeline, scenarios) are folded inside HTML '<details>' and '<summary>' tags.\n"
-    "3. Verify there are no raw system JSONs, developer-facing debug strings, or internal agent annotations."
+    "3. Verify there are no raw system JSONs, developer-facing debug strings, or internal agent annotations.\n"
+    "4. Ensure key claims link to their source articles (markdown links) and the report ends with a Sources section listing the cited URLs."
 )
 
 
@@ -120,22 +138,17 @@ def get_audit_agent(
             "critical violation of the criteria (such as extreme bias, unsafe content, or completely missing "
             "required structure). For minor gaps or stylistic preferences, approve the output (set is_approved "
             "to true) but provide suggestions/feedback for future improvements. Only reject (set is_approved to "
-            "false) if the output is completely unusable or directly violates a core requirement."
+            "false) if the output is completely unusable or directly violates a core requirement. "
+            "If a deterministic verification report is provided and `passed` is false, treat that as a core "
+            "requirement failure and set `is_approved` to false with concrete fixes."
         ),
         output_schema=AuditResult,
         output_key="audit_result",
     )
 
 
-def read_reference_material(filename: str) -> str:
-    """Reads a reference material file from the project workspace."""
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    path = os.path.join(project_root, "reference_materials", filename)
-    try:
-        with open(path, encoding="utf-8") as f:
-            return f.read()
-    except Exception as e:
-        return f"Error reading reference material {filename}: {e!s}"
+# --- Coordination Helper Functions ---
+
 
 
 def _normalize_dispute_claim(claim: str) -> str:
@@ -266,6 +279,8 @@ class NewsAnalysisCoordinator:
         max_revision_cycles: int = 2,
         control_state: dict | None = None,
         model_name: str | None = None,
+        deterministic_check=None,
+        audit_context_generator=None,
     ):
         feedback_text = ""
         suggestions = []
@@ -277,10 +292,52 @@ class NewsAnalysisCoordinator:
             prompt_text = prompt_generator(feedback_text, suggestions)
             output_data = await self._run_agent(agent, prompt_text, session_id)
 
+            deterministic_report = None
+            if deterministic_check:
+                try:
+                    deterministic_report = deterministic_check(output_data)
+                except Exception as e:
+                    deterministic_report = {
+                        "passed": False,
+                        "error_count": 1,
+                        "warning_count": 0,
+                        "issues": [
+                            {
+                                "severity": "error",
+                                "path": "deterministic_check",
+                                "message": f"Deterministic verification failed to run: {e!s}",
+                                "fix": "Inspect the verifier input shape and retry.",
+                            }
+                        ],
+                        "summary": "Deterministic verification failed to run.",
+                    }
+
+            audit_context = ""
+            if audit_context_generator:
+                try:
+                    audit_context = str(audit_context_generator(output_data) or "")
+                except Exception as e:
+                    audit_context = f"Audit context generation failed: {e!s}"
+
+            audit_context_parts = []
+            if audit_context:
+                audit_context_parts.append(f"Additional audit context:\n{audit_context}")
+            if deterministic_report:
+                audit_context_parts.append(
+                    "Deterministic verification report:\n"
+                    f"{format_verification_report(deterministic_report)}"
+                )
+            audit_context_text = (
+                "\n\n".join(audit_context_parts) + "\n\n"
+                if audit_context_parts
+                else ""
+            )
+
             # Spawn Audit Agent
             audit_agent = get_audit_agent(agent.name, criteria, model_name=model_name)
             audit_prompt = (
                 f"Target Agent '{agent.name}' Output:\n{output_data}\n\n"
+                f"{audit_context_text}"
                 f"Please audit the output against the criteria."
             )
             await call_callback(
@@ -291,23 +348,35 @@ class NewsAnalysisCoordinator:
             audit_result = await self._run_agent(audit_agent, audit_prompt, session_id)
 
             is_approved = (
-                audit_result.get("is_approved", True) if audit_result else True
+                audit_result.get("is_approved", False) if audit_result else False
             )
-            audit_feedback = (
-                audit_result.get("audit_feedback", []) if audit_result else []
+            feedback_items = (
+                list(audit_result.get("audit_feedback", [])) if audit_result else []
             )
-            recommended_fixes = (
-                audit_result.get("recommended_fixes", []) if audit_result else []
+            suggestions = (
+                list(audit_result.get("recommended_fixes", [])) if audit_result else []
             )
-            legacy_feedback = audit_result.get("feedback", "") if audit_result else ""
-            legacy_suggestions = (
-                audit_result.get("revision_suggestions", []) if audit_result else []
-            )
-            feedback_items = audit_feedback or (
-                [legacy_feedback] if legacy_feedback else []
-            )
-            suggestions = recommended_fixes or legacy_suggestions
-            feedback_text = legacy_feedback or "; ".join(feedback_items)
+            if not audit_result:
+                feedback_items.append("Audit agent returned no structured result.")
+
+            if deterministic_report and not deterministic_report.get("passed", True):
+                is_approved = False
+                verification_feedback = deterministic_report.get(
+                    "summary", "Deterministic verification failed."
+                )
+                feedback_items.insert(0, verification_feedback)
+                verification_fixes = [
+                    issue.get("fix") or issue.get("message", "")
+                    for issue in deterministic_report.get("issues", [])
+                    if issue.get("severity") == "error"
+                ]
+                suggestions = list(
+                    dict.fromkeys(
+                        [fix for fix in verification_fixes if fix] + suggestions
+                    )
+                )
+
+            feedback_text = "; ".join(dict.fromkeys(feedback_items))
 
             editor_logs.append(
                 {
@@ -320,6 +389,7 @@ class NewsAnalysisCoordinator:
                     "audit_feedback": feedback_items,
                     "recommended_fixes": suggestions,
                     "suggestions": suggestions,
+                    "deterministic_verification": deterministic_report,
                 }
             )
 
@@ -707,7 +777,6 @@ class NewsAnalysisCoordinator:
             # Parallel Group 1: Fact, Dispute, and Perspective
             facts_data = {
                 "consensus_facts": [],
-                "disputed_claims": [],
                 "timeline_events": [],
                 "timeline": [],
             }
@@ -716,7 +785,6 @@ class NewsAnalysisCoordinator:
             dispute_data = {"disputed_claims": []}
             dispute_ok = True
 
-            perspective_axis = recruitment_result.get("perspective_axis")
             bias_data = {
                 "profiles": [],
                 "key_rhetorical_differences": "No media profiling recruited.",
@@ -752,6 +820,9 @@ class NewsAnalysisCoordinator:
                     max_revision_cycles=audit_revision_cycles,
                     control_state=control_state,
                     model_name=model_name,
+                    deterministic_check=lambda output: verify_analysis_evidence(
+                        articles_data, facts_data=output
+                    ),
                 )
                 if res_facts:
                     facts_data = res_facts
@@ -793,6 +864,9 @@ class NewsAnalysisCoordinator:
                         max_revision_cycles=audit_revision_cycles,
                         control_state=control_state,
                         model_name=model_name,
+                        deterministic_check=lambda output: verify_analysis_evidence(
+                            articles_data, dispute_data=output
+                        ),
                     )
                     if res_dispute:
                         dispute_data = res_dispute
@@ -811,23 +885,17 @@ class NewsAnalysisCoordinator:
                     await self._check_controls(control_state)
                     if control_state is not None:
                         control_state["step_statuses"]["bias_agent"] = "running"
-                    axis_msg = (
-                        f" (Axis: {perspective_axis})" if perspective_axis else ""
-                    )
                     await call_callback(
                         "bias_agent",
-                        f"Recruiting Perspective Agent{axis_msg}...",
+                        "Recruiting Perspective Agent...",
                     )
                     bias_agent = get_bias_agent(model_name)
 
                     def bias_prompt_gen(f, s):
-                        axis_str = (
-                            f"Classification Axis: {perspective_axis}\n"
-                            if perspective_axis
-                            else "Classification Axis: Dynamically determined by you based on the articles\n"
-                        )
                         return (
-                            f"Topic: {topic}\n{axis_str}Analyze framing & omissions:\n{articles_data}"
+                            f"Topic: {topic}\n"
+                            "Classification Axis: Dynamically determined by you based on the articles\n"
+                            f"Analyze framing & omissions:\n{articles_data}"
                             + (
                                 f"\n\nFeedback from Auditor: {f}\nSuggestions: {', '.join(s)}"
                                 if f
@@ -846,6 +914,9 @@ class NewsAnalysisCoordinator:
                         max_revision_cycles=audit_revision_cycles,
                         control_state=control_state,
                         model_name=model_name,
+                        deterministic_check=lambda output: verify_analysis_evidence(
+                            articles_data, narratives_data=output
+                        ),
                     )
                     if res_bias:
                         bias_data = res_bias
@@ -862,7 +933,7 @@ class NewsAnalysisCoordinator:
                 run_fact_agent(), run_dispute_agent(), run_perspective_agent()
             )
 
-            # Merge disputes into facts_data for dashboard compatibility
+            # Expose the Dispute Agent's claims on facts_data for dashboard compatibility
             if not dispute_data:
                 dispute_data = {"disputed_claims": []}
             facts_data["disputed_claims"] = merge_disputed_claims(
@@ -887,13 +958,8 @@ class NewsAnalysisCoordinator:
                     {"facts": facts_data, "narratives": bias_data},
                 )
 
-            # Reference documents
-            political_ref = read_reference_material("political_policy_framework.md")
-            economic_ref = read_reference_material("economic_data_indicators.md")
-            media_ref = read_reference_material("media_ethics_standards.md")
-
             # Parallel Group 2: Expert Panel and Future Outlook
-            expert_domains = recruitment_result.get("expert_domains")
+            reference_text = ""
             expert_data = {
                 "expert_opinions": [],
                 "roundtable_summary": "No expert roundtable recruited.",
@@ -901,7 +967,7 @@ class NewsAnalysisCoordinator:
             expert_ok = True
 
             outlook_data = {
-                "most_likely_scenario": "N/A",
+                "most_likely_scenario": None,
                 "alternative_scenarios": [],
                 "monitoring_indicators": [],
             }
@@ -909,34 +975,48 @@ class NewsAnalysisCoordinator:
 
             async def run_expert_agent():
                 nonlocal expert_data, expert_ok
-                if recruitment_result.get("recruit_expert", True):
-                    await self._check_controls(control_state)
-                    if control_state is not None:
-                        control_state["step_statuses"]["expert"] = "running"
-                    expert_msg = (
-                        f"Recruiting Expert Panel (Domains: {expert_domains})..."
-                        if expert_domains
-                        else "Recruiting Expert Panel..."
-                    )
-                    await call_callback(
-                        "expert",
-                        expert_msg,
-                    )
-                    expert_agent = get_expert_agent(expert_domains, model_name)
+                if not recruitment_result.get("recruit_expert", True):
+                    return
+                await self._check_controls(control_state)
+                if control_state is not None:
+                    control_state["step_statuses"]["expert"] = "running"
+                await call_callback("expert", "Selecting expert domains...")
+
+                # Step 1: pick 2-3 expert domains for this topic
+                selector = get_expert_domain_selector(model_name)
+                selection = await self._run_agent(
+                    selector,
+                    (
+                        f"Topic: {topic}\n"
+                        f"Consensus Facts: {facts_data}\n"
+                        f"Disputes: {dispute_data}\n"
+                        "Select the 2-3 most appropriate expert domains."
+                    ),
+                    session_id,
+                )
+                domains = [
+                    str(domain).strip()
+                    for domain in (selection or {}).get("domains") or []
+                    if str(domain).strip()
+                ][:3]
+                if not domains:
+                    domains = ["Public Policy Analyst", "Media Ethics Analyst"]
+                await call_callback(
+                    "expert",
+                    f"Recruiting Expert Panel (Domains: {', '.join(domains)})...",
+                )
+
+                # Step 2: run one expert agent per domain in parallel, each audited
+                async def run_one_expert(domain: str):
+                    expert_agent = get_domain_expert_agent(domain, model_name)
 
                     def expert_prompt_gen(f, s):
-                        domain_req = (
-                            f"Provide domain commentary for: {expert_domains}."
-                            if expert_domains
-                            else "Dynamically identify 2-3 most appropriate expert domains for this topic, and provide domain commentary for each."
-                        )
                         return (
-                            f"Topic: {topic}\nConsensus & Disputes: {facts_data}\nMedia Narratives: {bias_data}\n\n"
-                            f"--- REFERENCE MATERIALS ---\n"
-                            f"Constitutional & Regulatory Framework:\n{political_ref}\n\n"
-                            f"Economic Data Indicators:\n{economic_ref}\n\n"
-                            f"Media Literacy & Ethics Standards:\n{media_ref}\n\n"
-                            f"{domain_req}"
+                            f"Topic: {topic}\n"
+                            f"Consensus Facts: {facts_data}\n"
+                            f"Disputes: {dispute_data}\n"
+                            f"Media Narratives: {bias_data}\n\n"
+                            f"Provide your commentary as '{domain}'."
                             + (
                                 f"\n\nFeedback from Auditor: {f}\nSuggestions: {', '.join(s)}"
                                 if f
@@ -944,7 +1024,7 @@ class NewsAnalysisCoordinator:
                             )
                         )
 
-                    res_expert, ok = await self._run_agent_with_audit(
+                    opinion, ok = await self._run_agent_with_audit(
                         expert_agent,
                         expert_prompt_gen,
                         EXPERT_AUDIT_CRITERIA,
@@ -955,21 +1035,51 @@ class NewsAnalysisCoordinator:
                         max_revision_cycles=audit_revision_cycles,
                         control_state=control_state,
                         model_name=model_name,
+                        deterministic_check=lambda output: verify_analysis_evidence(
+                            articles_data,
+                            experts_data={
+                                "expert_opinions": [output] if output else []
+                            },
+                            reference_text=reference_text,
+                        ),
                     )
-                    if res_expert:
-                        expert_data = res_expert
-                    expert_ok = ok
-                    if not expert_ok:
+                    if not ok:
                         add_unresolved(expert_agent.name, "expert")
-                    if control_state is not None:
-                        control_state["step_statuses"]["expert"] = "completed"
-                    if results_dict is not None:
-                        results_dict["experts"] = expert_data
-                    await call_callback(
-                        "expert_complete",
-                        "Expert Roundtable analysis completed.",
-                        expert_data,
+                    return opinion, ok
+
+                expert_results = await asyncio.gather(
+                    *(run_one_expert(domain) for domain in domains)
+                )
+                opinions = [opinion for opinion, _ in expert_results if opinion]
+                expert_ok = all(ok for _, ok in expert_results)
+
+                # Step 3: moderator synthesizes the roundtable summary
+                roundtable_summary = ""
+                if opinions:
+                    summarizer = get_roundtable_summarizer(model_name)
+                    summary_result = await self._run_agent(
+                        summarizer,
+                        f"Topic: {topic}\nExpert commentaries:\n{json.dumps(opinions, ensure_ascii=True)}",
+                        session_id,
                     )
+                    roundtable_summary = (summary_result or {}).get(
+                        "roundtable_summary", ""
+                    )
+
+                expert_data = {
+                    "expert_opinions": opinions,
+                    "roundtable_summary": roundtable_summary
+                    or "No expert commentary could be produced.",
+                }
+                if control_state is not None:
+                    control_state["step_statuses"]["expert"] = "completed"
+                if results_dict is not None:
+                    results_dict["experts"] = expert_data
+                await call_callback(
+                    "expert_complete",
+                    "Expert Roundtable analysis completed.",
+                    expert_data,
+                )
 
             async def run_outlook_agent():
                 nonlocal outlook_data, outlook_ok
@@ -1001,6 +1111,9 @@ class NewsAnalysisCoordinator:
                         max_revision_cycles=audit_revision_cycles,
                         control_state=control_state,
                         model_name=model_name,
+                        deterministic_check=lambda output: verify_analysis_evidence(
+                            articles_data, outlook_data=output
+                        ),
                     )
                     if res_outlook:
                         outlook_data = res_outlook
@@ -1018,7 +1131,7 @@ class NewsAnalysisCoordinator:
             # Execute parallel Group 2
             await asyncio.gather(run_expert_agent(), run_outlook_agent())
 
-            # Step 8: Public Reporter Agent (Standard)
+            # Step 8: Public Reporter Agent
             await self._check_controls(control_state)
             if control_state is not None:
                 control_state["step_statuses"]["public_report"] = "running"
@@ -1035,9 +1148,44 @@ class NewsAnalysisCoordinator:
                 f"Future Outlook Scenarios: {outlook_data}\n\n"
                 f"Compile a comprehensive public summary report."
             )
-            public_report = await self._run_agent(
-                public_reporter, prompt_public, session_id
+
+            def public_report_prompt_gen(f, s):
+                return prompt_public + (
+                    f"\n\nFeedback from Auditor: {f}\nSuggestions: {', '.join(s)}"
+                    if f
+                    else ""
+                )
+
+            def public_report_audit_context(_output):
+                return json.dumps(
+                    {
+                        "verified_facts": facts_data,
+                        "media_narratives": bias_data,
+                        "expert_panel": expert_data,
+                        "future_outlook": outlook_data,
+                        "unresolved_audit_warnings": unresolved_audit_warnings,
+                    },
+                    ensure_ascii=True,
+                )
+
+            public_report, public_report_ok = await self._run_agent_with_audit(
+                public_reporter,
+                public_report_prompt_gen,
+                PUBLIC_REPORTER_AUDIT_CRITERIA,
+                session_id,
+                call_callback,
+                "public_report",
+                editor_logs,
+                max_revision_cycles=audit_revision_cycles,
+                control_state=control_state,
+                model_name=model_name,
+                deterministic_check=lambda output: verify_analysis_evidence(
+                    articles_data, report_data=output
+                ),
+                audit_context_generator=public_report_audit_context,
             )
+            if not public_report_ok:
+                add_unresolved(public_reporter.name, "public_report")
 
             if control_state is not None:
                 control_state["step_statuses"]["public_report"] = "completed"
@@ -1062,6 +1210,7 @@ class NewsAnalysisCoordinator:
             def public_editor_prompt_gen(f, s):
                 return (
                     f"Topic: {topic}\n"
+                    f"Public Summary Report (with citations): {public_report}\n"
                     f"Consensus & Facts: {facts_data}\n"
                     f"Media Narratives: {bias_data}\n"
                     f"Expert Commentary: {expert_data}\n"
@@ -1135,7 +1284,6 @@ class NewsAnalysisCoordinator:
                 "public_editor_warnings": public_editor_warnings,
                 "editor_logs": editor_logs,
                 "audit_warnings": unresolved_audit_warnings,
-                "evaluation": None,
                 "is_approved": is_approved,
             }
             if results_dict is not None:
@@ -1172,7 +1320,6 @@ class NewsAnalysisCoordinator:
                 else [],
                 "editor_logs": editor_logs,
                 "audit_warnings": unresolved_audit_warnings,
-                "evaluation": None,
                 "is_approved": False,
                 "stopped": True,
             }
