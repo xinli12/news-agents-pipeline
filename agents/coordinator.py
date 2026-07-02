@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 import uuid
 from typing import Any
 
@@ -53,15 +54,35 @@ FACT_AUDIT_CRITERIA = (
 )
 
 DISPUTE_AUDIT_CRITERIA = (
-    "1. Present Side A and Side B with equal depth and structural symmetry.\n"
-    "2. Maintain a completely neutral stance, without validating either side's assertions.\n"
-    "3. Ensure both sides include direct quotes and URLs."
+    "1. Verify schema compliance with DisputeList and DisputeItem, including claim, side assertions, "
+    "source lists, and evidence fields.\n"
+    "2. Maintain neutral, non-loaded language; do not validate either side or use judgmental wording.\n"
+    "3. Verify source traceability: evidence should include source, title when available, quote or snippet, "
+    "and URL where available. Do not approve hallucinated quotes, URLs, dates, sources, or claims.\n"
+    "4. Reject invented or unsupported counter-sides. If one side is weak, under-supported, or absent in "
+    "the source set, the output must explicitly warn about unsupported or weak evidence.\n"
+    "5. Check that duplicated wire-service reposts or same-cluster articles are not treated as independent "
+    "confirmation when metadata reveals duplication.\n"
+    "6. Prefer genuine material conflicts over minor wording differences, and require cautious language when "
+    "evidence is incomplete."
 )
 
 PERSPECTIVE_AUDIT_CRITERIA = (
-    "1. Describe narrative frames objectively and respectfully.\n"
-    "2. Ensure notable omissions are logically based on media comparisons.\n"
-    "3. Speculative analysis for missing perspectives must be clearly marked as speculative, not direct news."
+    "1. Verify schema compliance with PerspectiveProfile and NarrativeProfile, including profiles, "
+    "classification_axis when available, evidence, and key_rhetorical_differences.\n"
+    "2. Describe narrative frames objectively, respectfully, and with neutral, non-loaded language; avoid "
+    "over-generalizing political, social, national, or stakeholder groups.\n"
+    "3. Verify source traceability: reported perspectives should include representative sources, quote or "
+    "snippet evidence, and URL where available. Do not approve hallucinated groups, quotes, URLs, sources, "
+    "or claims.\n"
+    "4. Ensure the selected classification axis fits the article set, such as ideology, stakeholder role, "
+    "geopolitical position, industry role, geography, affected group, or media ecosystem.\n"
+    "5. Check that evidence-backed reporting is clearly distinguished from analytical inference or likely "
+    "concern. Unsupported or theoretically important perspectives must be marked as speculative or "
+    "'not enough source support found', not presented as reported news.\n"
+    "6. Ensure there is sufficient diversity of sources and perspectives for the topic, or explicit warnings "
+    "for missing, weak, or unsupported evidence.\n"
+    "7. Ensure notable omissions are logically based on comparisons across source-supported perspectives."
 )
 
 EXPERT_AUDIT_CRITERIA = (
@@ -115,6 +136,33 @@ def read_reference_material(filename: str) -> str:
             return f.read()
     except Exception as e:
         return f"Error reading reference material {filename}: {e!s}"
+
+
+def _normalize_dispute_claim(claim: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", " ", claim.lower())
+    return " ".join(normalized.split())
+
+
+def merge_disputed_claims(
+    fact_disputes: list[dict] | None, dispute_agent_disputes: list[dict] | None
+) -> list[dict]:
+    """Preserve fact-agent disputes and append unique standalone dispute-agent claims."""
+    merged = []
+    seen_claims = set()
+
+    for item in (fact_disputes or []) + (dispute_agent_disputes or []):
+        dedupe_text = str(item.get("claim") or item.get("dispute_question") or "")
+        normalized_claim = _normalize_dispute_claim(dedupe_text)
+        if not normalized_claim:
+            side_a = str(item.get("side_a_assertion", ""))
+            side_b = str(item.get("side_b_assertion", ""))
+            normalized_claim = _normalize_dispute_claim(f"{side_a} {side_b}")
+        if normalized_claim in seen_claims:
+            continue
+        seen_claims.add(normalized_claim)
+        merged.append(item)
+
+    return merged
 
 
 class NewsAnalysisCoordinator:
@@ -817,7 +865,10 @@ class NewsAnalysisCoordinator:
             # Merge disputes into facts_data for dashboard compatibility
             if not dispute_data:
                 dispute_data = {"disputed_claims": []}
-            facts_data["disputed_claims"] = dispute_data.get("disputed_claims", [])
+            facts_data["disputed_claims"] = merge_disputed_claims(
+                facts_data.get("disputed_claims", []),
+                dispute_data.get("disputed_claims", []),
+            )
 
             if results_dict is not None:
                 results_dict["facts"] = facts_data
