@@ -207,7 +207,7 @@ def get_live_news_articles(topic: str) -> str:
 
             if len(results) < 3:
                 return (
-                    "SEARCH_STATUS: insufficient_corroboration\n"
+                    "SEARCH_STATUS: Low\n"
                     f"QUERY: {topic}\n"
                     f"RAW_CANDIDATES: {raw_count}\n"
                     f"UNIQUE_CANDIDATES: {len(results)}\n"
@@ -266,8 +266,9 @@ def get_live_news_articles(topic: str) -> str:
 
                 scraped_contents = scrape_articles_parallel(urls)
 
+            status_str = "Moderate" if len(results) < 6 else "Good"
             output = [
-                "SEARCH_STATUS: candidate_pool_built",
+                f"SEARCH_STATUS: {status_str}",
                 f"QUERY: {topic}",
                 f"RAW_CANDIDATES: {raw_count}",
                 f"UNIQUE_CANDIDATES_AFTER_DEDUP: {len(results)}",
@@ -322,8 +323,10 @@ def get_search_agent(model_name: str | None = None) -> Agent:
             f"You are a News Categorizer Agent. Your job is to take a news topic, search for articles "
             f"using your '{tool_name}' tool, and categorize the articles according to the ArticleList schema.\n"
             f"First, perform an initial authenticity screen from the search output. If the tool returns "
-            f"SEARCH_STATUS no_results or insufficient_corroboration, set search_status accordingly, explain "
-            f"the issue in verification_summary, keep articles empty, and do not invent sources. If the query "
+            f"SEARCH_STATUS no_results or Low, set search_status accordingly, explain "
+            f"the issue in verification_summary, keep articles empty, and do not invent sources. If the tool "
+            f"returns Moderate or Good, set search_status to the corresponding returned "
+            f"value. If the query "
             f"appears to contain an obvious name/date/event error but results strongly indicate a correction, "
             f"set corrected_query and explain the correction in warnings.\n"
             f"CRITICAL: You MUST process and include at least 12 to 15 articles in the 'articles' list in your response. "
