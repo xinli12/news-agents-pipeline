@@ -1519,6 +1519,11 @@ with tab_briefing:
     if review_res.get("action") == "accept_with_notification":
         st.warning(f"⚠️ **Input validation note**: {review_res.get('notification_message')}")
 
+    search_res = results.get("articles") or {}
+    search_status_val = str(search_res.get("search_status") or "").lower()
+    if search_status_val == "moderate":
+        st.warning("⚠️ **Sparse News Pool**: Very few unique search sources (3 to 5 unique articles) were found for this topic. Downstream analysis may be thin or limited.")
+
     public_report = results.get("public_report") or {}
     if not public_report:
         st.markdown(

@@ -178,13 +178,13 @@ def test_article_list_schema_supports_search_verification_metadata() -> None:
     article_list = ArticleList(
         topic="Example topic",
         query_used="Example topic latest news",
-        search_status="insufficient_corroboration",
+        search_status="Low",
         verification_summary="Only one distinct source was found.",
         warnings=["Do not continue without more sources."],
         articles=[],
     )
 
-    assert article_list.search_status == "insufficient_corroboration"
+    assert article_list.search_status == "Low"
     assert article_list.warnings == ["Do not continue without more sources."]
 
 

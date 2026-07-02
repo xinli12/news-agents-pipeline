@@ -382,6 +382,20 @@ async def run_cli(topic: str):
                 )
             )
 
+        # Check for sparse pool warning
+        search_res = results.get("articles") or {}
+        search_status_val = str(search_res.get("search_status") or "").lower()
+        if search_status_val == "moderate":
+            console.print(
+                Panel(
+                    f"[bold yellow]⚠️ Sparse News Pool[/bold yellow]\n\n"
+                    f"Very few unique search sources (3 to 5 unique articles) were found for this query. "
+                    f"Downstream analysis may be thin or limited.",
+                    title="Search Notice",
+                    border_style="yellow",
+                )
+            )
+
         if results.get("search_failed"):
             search_result = results.get("search_result", {})
             warnings = "\n".join(
