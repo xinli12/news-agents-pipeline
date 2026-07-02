@@ -653,7 +653,7 @@ class NewsAnalysisCoordinator:
             search_status = str(articles_data.get("search_status", "verified")).lower()
             if search_status in {
                 "no_results",
-                "insufficient_corroboration",
+                "low",
                 "unverified",
                 "doubtful",
                 "false_or_nonexistent",
