@@ -2,17 +2,12 @@ import pydantic
 
 
 # --- Input Reviewer Model ---
-class TopicReviewResult(pydantic.BaseModel):
-    is_safe: bool
-    is_news_relevant: bool
-    suggested_query_formulation: str
-    rejection_reason: str | None = None
-    input_issue_type: str = "clear_news_query"
-    user_message: str = ""
-    suggested_options: list[str] = pydantic.Field(default_factory=list)
-    auto_modified: bool = False
-    needs_user_confirmation: bool = False
-    confidence: float = 1.0
+class InputValidationResult(pydantic.BaseModel):
+    action: str  # Must be one of: "accept", "accept_with_notification", "reject_with_confirmation", "convert"
+    is_news_related: bool
+    explanation: str
+    notification_message: str | None = None
+    converted_query: str | None = None
 
 
 # --- Search & Categorizer Models ---
