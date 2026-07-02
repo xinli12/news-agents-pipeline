@@ -12,6 +12,7 @@ from google.genai import types
 
 from agents.bias_agent import get_bias_agent
 from agents.dispute_agent import get_dispute_agent
+from agents.evidence_audit import run_deterministic_evidence_audit
 from agents.expert_agent import get_expert_agent
 from agents.fact_agent import get_fact_agent
 from agents.outlook_agent import get_outlook_agent
@@ -453,6 +454,7 @@ class NewsAnalysisCoordinator:
         public_report = None
         public_editor_report = ""
         public_editor_warnings = []
+        evidence_audit = {}
         optimized_query = topic
 
         try:
@@ -521,6 +523,7 @@ class NewsAnalysisCoordinator:
                     },
                     "editor_logs": editor_logs,
                     "audit_warnings": unresolved_audit_warnings,
+                    "evidence_audit": {},
                 }
                 if results_dict is not None:
                     results_dict.update(res)
@@ -588,6 +591,7 @@ class NewsAnalysisCoordinator:
                     "search_result": articles_data or {},
                     "editor_logs": editor_logs,
                     "audit_warnings": unresolved_audit_warnings,
+                    "evidence_audit": {},
                     "is_approved": False,
                 }
                 if results_dict is not None:
@@ -613,6 +617,7 @@ class NewsAnalysisCoordinator:
                     "search_result": articles_data,
                     "editor_logs": editor_logs,
                     "audit_warnings": unresolved_audit_warnings,
+                    "evidence_audit": {},
                     "is_approved": False,
                 }
                 if results_dict is not None:
@@ -870,8 +875,19 @@ class NewsAnalysisCoordinator:
                 dispute_data.get("disputed_claims", []),
             )
 
+            try:
+                evidence_audit = run_deterministic_evidence_audit(
+                    facts_data, bias_data, articles_data
+                )
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Deterministic evidence audit failed"
+                )
+                evidence_audit = {}
+
             if results_dict is not None:
                 results_dict["facts"] = facts_data
+                results_dict["evidence_audit"] = evidence_audit
 
             # Broadcast completion of facts & perspectives
             if recruitment_result.get("recruit_perspective", True):
@@ -1133,6 +1149,7 @@ class NewsAnalysisCoordinator:
                 "public_report": public_report,
                 "public_editor_report": public_editor_report,
                 "public_editor_warnings": public_editor_warnings,
+                "evidence_audit": evidence_audit,
                 "editor_logs": editor_logs,
                 "audit_warnings": unresolved_audit_warnings,
                 "evaluation": None,
@@ -1170,6 +1187,9 @@ class NewsAnalysisCoordinator:
                 "public_editor_warnings": public_editor_warnings
                 if "public_editor_warnings" in locals()
                 else [],
+                "evidence_audit": evidence_audit
+                if "evidence_audit" in locals()
+                else {},
                 "editor_logs": editor_logs,
                 "audit_warnings": unresolved_audit_warnings,
                 "evaluation": None,
