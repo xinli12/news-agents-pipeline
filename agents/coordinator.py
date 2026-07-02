@@ -27,8 +27,8 @@ from agents.outlook_agent import get_outlook_agent
 from agents.public_editor_agent import get_public_editor_agent
 from agents.public_reporter_agent import get_public_reporter_agent
 from agents.recruiter_agent import get_recruiter_agent
-from agents.review_agent import get_review_agent
-from agents.schemas import AuditResult
+from agents.review_agent import get_input_check_agent
+from agents.schemas import AuditResult, InputValidationResult
 from agents.search_agent import get_search_agent
 
 
@@ -37,14 +37,14 @@ class WorkflowStoppedException(Exception):
 
     pass
 
-
 # --- Audit Criteria Definitions ---
 INPUT_AUDIT_CRITERIA = (
-    "1. The suggested query formulation must be neutral, objective, and stripped of emotional/loaded language.\n"
-    "2. Unsafe inputs must be correctly flagged (is_safe: false).\n"
-    "3. If the input is broad, verify that narrowing-down options are provided.\n"
-    "4. Ensure no obvious typos or non-news queries are passed through without correction/rejection."
+    "1. The action must be exactly one of: 'accept', 'accept_with_notification', 'reject_with_confirmation', 'convert'.\n"
+    "2. If the input contains a URL or copy-pasted article, the action must be 'convert'.\n"
+    "3. If action is 'convert', check if the URL/article is news-related. If it is, converted_query must be populated. If it is not, the action must be 'reject_with_confirmation'.\n"
+    "4. If action is 'accept_with_notification' or 'reject_with_confirmation', notification_message must be populated."
 )
+
 
 SEARCH_AUDIT_CRITERIA = (
     "1. Ideological balance (Left, Right, Center, Independent) is preferred but optional. DO NOT reject if the search query simply returns limited viewpoints or articles.\n"
@@ -421,20 +421,16 @@ class NewsAnalysisCoordinator:
         await self.session_service.create_session(
             app_name="news_app", user_id="user", session_id=session_id
         )
-        review_agent = get_review_agent(model_name)
-        prompt_text = f"Audit this input news topic: '{topic}'"
-        result = await self._run_agent(review_agent, prompt_text, session_id)
+        input_agent = get_input_check_agent(model_name)
+        prompt_text = f"Validate this input topic: '{topic}'"
+        result = await self._run_agent(input_agent, prompt_text, session_id)
         if not result:
             result = {
-                "is_safe": True,
-                "is_news_relevant": True,
-                "suggested_query_formulation": topic,
-                "input_issue_type": "clear_news_query",
-                "user_message": "Failed to get review result.",
-                "suggested_options": [],
-                "auto_modified": False,
-                "needs_user_confirmation": False,
-                "confidence": 1.0,
+                "action": "accept",
+                "is_news_related": True,
+                "explanation": "Failed to get review result.",
+                "notification_message": None,
+                "converted_query": None,
             }
         return result
 
@@ -512,7 +508,7 @@ class NewsAnalysisCoordinator:
                 }
             )
 
-        review_result = None
+        review_result = {}
         articles_data = None
         recruitment_result = None
         facts_data = None
@@ -534,31 +530,26 @@ class NewsAnalysisCoordinator:
 
             if bypass_input_check:
                 review_result = {
-                    "is_safe": True,
-                    "is_news_relevant": True,
-                    "suggested_query_formulation": topic,
-                    "rejection_reason": None,
-                    "input_issue_type": "clear_news_query",
-                    "user_message": "Bypassed input check.",
-                    "suggested_options": [],
-                    "auto_modified": False,
-                    "needs_user_confirmation": False,
-                    "confidence": 1.0,
+                    "action": "accept",
+                    "is_news_related": True,
+                    "explanation": "Bypassed input check.",
+                    "notification_message": None,
+                    "converted_query": None,
                 }
                 review_ok = True
                 await call_callback("review_approved", "Input check bypassed.")
             else:
-                review_agent = get_review_agent(model_name)
+                input_agent = get_input_check_agent(model_name)
 
                 def review_prompt_gen(f, s):
-                    return f"Audit this input news topic: '{topic}'" + (
+                    return f"Validate this input topic: '{topic}'" + (
                         f"\n\nFeedback from Auditor: {f}\nSuggestions: {', '.join(s)}"
                         if f
                         else ""
                     )
 
                 review_result, review_ok = await self._run_agent_with_audit(
-                    review_agent,
+                    input_agent,
                     review_prompt_gen,
                     INPUT_AUDIT_CRITERIA,
                     session_id,
@@ -571,24 +562,15 @@ class NewsAnalysisCoordinator:
                 )
 
             if not review_ok:
-                add_unresolved(review_agent.name, "review")
+                add_unresolved(input_agent.name, "review")
 
-            if (
-                not review_result
-                or not review_result.get("is_safe", True)
-                or not review_result.get("is_news_relevant", True)
-            ):
+            action = review_result.get("action", "accept")
+            if action == "reject_with_confirmation":
                 if control_state is not None:
                     control_state["step_statuses"]["review"] = "failed"
                 res = {
                     "reviewed": False,
-                    "review_result": review_result
-                    or {
-                        "is_safe": False,
-                        "is_news_relevant": False,
-                        "suggested_query_formulation": topic,
-                        "rejection_reason": "Failed input check audit.",
-                    },
+                    "review_result": review_result,
                     "editor_logs": editor_logs,
                     "audit_warnings": unresolved_audit_warnings,
                 }
@@ -599,7 +581,11 @@ class NewsAnalysisCoordinator:
             if control_state is not None:
                 control_state["step_statuses"]["review"] = "completed"
 
-            optimized_query = review_result.get("suggested_query_formulation", topic)
+            if action == "convert" and review_result.get("is_news_related", True):
+                optimized_query = review_result.get("converted_query") or topic
+            else:
+                optimized_query = topic
+
             if results_dict is not None:
                 results_dict["review_result"] = review_result
                 results_dict["optimized_query"] = optimized_query
@@ -607,7 +593,7 @@ class NewsAnalysisCoordinator:
 
             await call_callback(
                 "review_complete",
-                f"Input check passed. Query: '{optimized_query}'",
+                f"Input check passed with action '{action}'. Query: '{optimized_query}'",
                 {"review_result": review_result},
             )
 
