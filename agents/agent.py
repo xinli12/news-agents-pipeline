@@ -60,10 +60,8 @@ class NewsAnalysisWorkflowAgent(BaseAgent):
             if not results.get("reviewed", True):
                 rejection = results.get("review_result", {})
                 response_text = (
-                    f"# Input Check Rejection\n\n"
-                    f"**Action**: {rejection.get('action', 'reject_with_confirmation')}\n"
-                    f"**Reason**: {rejection.get('explanation', 'Not news-relevant or safe.')}\n\n"
-                    f"{rejection.get('notification_message', 'Would you like to revise the request or add news context?')}"
+                    f"Rejected: {rejection.get('rejection_reason', 'Not news-relevant or safe.')}\n"
+                    f"Suggested formulation: {rejection.get('suggested_query_formulation', '')}"
                 )
             elif results.get("search_failed"):
                 search_result = results.get("search_result", {})
@@ -82,13 +80,6 @@ class NewsAnalysisWorkflowAgent(BaseAgent):
                 editor_logs = results.get("editor_logs", [])
 
                 response_text = ""
-                review_res = results.get("review_result", {})
-                if review_res.get("action") == "accept_with_notification":
-                    response_text += (
-                        f"> [!WARNING]\n"
-                        f"> **Input validation note**: {review_res.get('notification_message')}\n\n"
-                    )
-
                 if not is_approved and editor_logs:
                     last_log = editor_logs[-1]
                     feedback = last_log.get("feedback", "")
