@@ -362,13 +362,39 @@ async def run_cli(topic: str):
             console.print("\n[bold red]✖ Input Review Rejected![/bold red]")
             console.print(
                 Panel(
-                    f"[bold]Rejection Reason:[/bold] {review.get('rejection_reason', 'Not news-relevant or safe.')}\n\n"
-                    f"[bold]Suggested Query:[/bold] {review.get('suggested_query_formulation', '')}",
+                    f"[bold]Action:[/bold] {review.get('action', 'reject_with_confirmation')}\n"
+                    f"[bold]Reason:[/bold] {review.get('explanation', 'Not news-relevant or safe.')}\n\n"
+                    f"{review.get('notification_message', '')}",
                     title="Input Moderation Audit Result",
                     border_style="red",
                 )
             )
             return
+
+        review_res = results.get("review_result", {})
+        if review_res.get("action") == "accept_with_notification":
+            console.print(
+                Panel(
+                    f"[bold yellow]⚠️ Input Validation Note[/bold yellow]\n\n"
+                    f"{review_res.get('notification_message')}",
+                    title="Input Validation Warning",
+                    border_style="yellow",
+                )
+            )
+
+        # Check for sparse pool warning
+        search_res = results.get("articles") or {}
+        search_status_val = str(search_res.get("search_status") or "").lower()
+        if search_status_val == "moderate":
+            console.print(
+                Panel(
+                    f"[bold yellow]⚠️ Sparse News Pool[/bold yellow]\n\n"
+                    f"Very few unique search sources (3 to 5 unique articles) were found for this query. "
+                    f"Downstream analysis may be thin or limited.",
+                    title="Search Notice",
+                    border_style="yellow",
+                )
+            )
 
         if results.get("search_failed"):
             search_result = results.get("search_result", {})
