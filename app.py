@@ -325,6 +325,13 @@ st.markdown(
 )
 
 
+def _new_resume_event() -> threading.Event:
+    """Cross-thread pause gate for the pipeline: set = running, cleared = paused."""
+    event = threading.Event()
+    event.set()
+    return event
+
+
 def clamp_score(value: float | int | None) -> float:
     try:
         score = float(value or 0)
@@ -1335,7 +1342,13 @@ def start_workflow(
             "audit_warnings": [],
             "is_approved": True,
         },
-        "control": {"paused": False, "stopped": False},
+        # resume_event: set = running, cleared = paused. A stop also sets it so
+        # the pipeline's pause wait wakes immediately instead of polling.
+        "control": {
+            "paused": False,
+            "stopped": False,
+            "resume_event": _new_resume_event(),
+        },
         "step_statuses": {
             "review": "queued",
             "search": "queued",
@@ -1589,6 +1602,7 @@ with st.sidebar:
             use_container_width=True,
         ):
             state["control"]["paused"] = True
+            state["control"]["resume_event"].clear()
             state["status"] = "paused"
             st.rerun()
     elif status == "paused":
@@ -1599,6 +1613,7 @@ with st.sidebar:
             use_container_width=True,
         ):
             state["control"]["paused"] = False
+            state["control"]["resume_event"].set()
             state["status"] = "running"
             st.rerun()
 
@@ -1608,7 +1623,8 @@ with st.sidebar:
             "Stop", key="stop_btn", type="primary", use_container_width=True
         ):
             state["control"]["stopped"] = True
-            state["control"]["paused"] = False  # Unblock loop
+            state["control"]["paused"] = False
+            state["control"]["resume_event"].set()  # Unblock a paused pipeline
             state["status"] = "stopped"
             st.rerun()
 

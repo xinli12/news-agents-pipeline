@@ -1,11 +1,11 @@
-import os
 
 from google.adk.agents import Agent
 
+from agents.config import resolve_model
+
 
 def get_qa_agent(model_name: str | None = None) -> Agent:
-    if model_name is None:
-        model_name = os.environ.get("CURRENT_MODEL", "gemini-3.1-flash-lite")
+    model_name = resolve_model(model_name)
     return Agent(
         name="qa_agent",
         model=model_name,

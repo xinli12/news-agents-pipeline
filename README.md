@@ -10,6 +10,7 @@ The project is intended for learning and experimentation only, not commercial us
 | --- | --- |
 | Input review | Checks safety and news relevance, neutralizes loaded wording, expands fragments, and proposes narrower query options. |
 | Live search | Uses DuckDuckGo via `ddgs`, falls back from news search to text search, and builds a candidate pool of up to 40 raw results. |
+| MCP integration | The search agent consumes the official MCP reference `fetch` server (spawned on demand via `uvx mcp-server-fetch`) to pull full article pages when snippets are thin. Disable with `NEWSLENS_DISABLE_MCP=1`. |
 | Deduplication | Removes duplicate URLs and collapses likely wire-service or reprint clusters before analysis. |
 | Article enrichment | Scrapes selected articles with Jina Reader first, then BeautifulSoup/lxml as a fallback. |
 | Source analysis | Classifies article-level bias/framing, source reliability, media scale, and objectivity. |
@@ -18,6 +19,8 @@ The project is intended for learning and experimentation only, not commercial us
 | Public output | Produces a concise public report, a folded editor report, a 7-tab Streamlit dashboard, and optional follow-up Q&A. |
 
 ## Architecture
+
+The pipeline is implemented as a native ADK `Workflow` graph (`agents/pipeline.py`): each stage is a workflow node, review/search failures route straight to the finalize node, fact/dispute/perspective and expert/outlook run as parallel branches merged by join nodes, and every stage dispatches its worker plus a stage-specific audit agent dynamically with a bounded revision loop and retry policy.
 
 ```mermaid
 graph TD
@@ -61,9 +64,12 @@ graph TD
 hackathon/
 ├── agents/
 │   ├── agent.py                  # ADK root agent
-│   ├── coordinator.py            # Pipeline orchestration, audits, retries, pause/stop state
+│   ├── coordinator.py            # Coordinator API: runs the workflow, exposes analyze()
+│   ├── pipeline.py               # ADK Workflow graph: stages, routes, audit loops
+│   ├── audit_criteria.py         # Per-stage audit criteria constants
+│   ├── config.py                 # Default model configuration
 │   ├── fast_api_app.py           # ADK FastAPI server entrypoint used by Docker/tests
-│   ├── search_agent.py           # Search, dedupe, source classification
+│   ├── search_agent.py           # Search, dedupe, source classification, MCP fetch
 │   ├── scraper.py                # Jina Reader + BeautifulSoup article scraping
 │   ├── review_agent.py           # Input review and query repair
 │   ├── recruiter_agent.py        # Optional module selection
@@ -165,9 +171,11 @@ agents-cli eval grade --config tests/eval/eval_config.yaml
 ## Configuration
 
 - `GEMINI_API_KEY` or `GOOGLE_API_KEY`: required for live agent runs.
-- `CURRENT_MODEL`: set internally by the coordinator from the selected model; defaults to `gemini-3.1-flash-lite`.
+- The analysis model is passed explicitly through the pipeline (selected in the Streamlit sidebar or CLI); the default is `gemini-3.1-flash-lite` (`agents/config.py`).
+- `NEWSLENS_DISABLE_MCP`: set to `1` to run the search agent without the MCP fetch server.
 - `LOGS_BUCKET_NAME`: optional GCS bucket for ADK artifact/telemetry paths in deployed environments.
 - `ALLOW_ORIGINS`: optional comma-separated CORS allowlist for the FastAPI app.
+- Google Cloud credentials are optional: without them the FastAPI server runs with standard logging and no cloud tracing.
 
 ## Security Notes
 

@@ -1,11 +1,15 @@
 import json
+import os
 import re
+import shutil
+import sys
 import urllib.parse
 
 from ddgs import DDGS
 from google.adk.agents import Agent
 from google.genai import types
 
+from agents.config import DEFAULT_MODEL, resolve_model
 from agents.schemas import ArticleList
 
 WIRE_SOURCE_NAMES = {
@@ -86,11 +90,11 @@ def classify_articles_bias_batch(articles: list[dict]) -> dict[str, str]:
     if not articles:
         return {}
     try:
-        import os
-
         from google import genai
 
-        model_name = os.environ.get("CURRENT_MODEL", "gemini-3.1-flash-lite")
+        # Bulk labeling is a cheap classification call; the default fast model
+        # is used regardless of which model drives the main analysis agents.
+        model_name = DEFAULT_MODEL
         client = genai.Client()
 
         # Prepare the list of articles for classification
@@ -307,13 +311,57 @@ def get_live_news_articles(topic: str) -> str:
         return f"Error executing DuckDuckGo search: {e!s}"
 
 
-def get_search_agent(model_name: str | None = None) -> Agent:
-    if model_name is None:
-        import os
+def build_mcp_fetch_toolset():
+    """Connects the official MCP reference 'fetch' server as an extra toolset.
 
-        model_name = os.environ.get("CURRENT_MODEL", "gemini-3.1-flash-lite")
+    The server (`mcp-server-fetch`) is spawned on demand via `uvx`, so it needs
+    no preinstallation beyond `uv` itself. Returns None when `uvx` is missing,
+    the MCP SDK is unavailable, or NEWSLENS_DISABLE_MCP is set, in which case
+    the search agent simply runs without the fetch tool.
+    """
+    if os.environ.get("NEWSLENS_DISABLE_MCP", "").lower() in {"1", "true", "yes"}:
+        return None
+    if shutil.which("uvx") is None:
+        return None
+    try:
+        from google.adk.tools.mcp_tool import McpToolset, StdioConnectionParams
+        from mcp import StdioServerParameters
+
+        return McpToolset(
+            connection_params=StdioConnectionParams(
+                server_params=StdioServerParameters(
+                    command="uvx", args=["mcp-server-fetch"]
+                ),
+                timeout=30.0,
+            ),
+            tool_filter=["fetch"],
+        )
+    except Exception as e:
+        print(
+            f"Warning: MCP fetch toolset unavailable ({e!s}). Continuing without it.",
+            file=sys.stderr,
+        )
+        return None
+
+
+def get_search_agent(model_name: str | None = None) -> Agent:
+    model_name = resolve_model(model_name)
     tools = [get_live_news_articles]
     tool_name = "get_live_news_articles"
+
+    mcp_fetch = build_mcp_fetch_toolset()
+    if mcp_fetch is not None:
+        tools.append(mcp_fetch)
+    mcp_instruction = (
+        (
+            "If a promising article's Content Snippet is missing, truncated, or "
+            "scraping failed, you MAY use the MCP 'fetch' tool to retrieve that "
+            "article's page as markdown and extract a better snippet. Use it for "
+            "at most 3 articles to limit latency.\n"
+        )
+        if mcp_fetch is not None
+        else ""
+    )
 
     return Agent(
         name="search_agent",
@@ -331,6 +379,7 @@ def get_search_agent(model_name: str | None = None) -> Agent:
             f"ensuring a balanced representation across different viewpoints (Left, Right, Center, and Independent).\n"
             f"Do not treat the same wire-service story or likely reprint cluster as independent corroboration. "
             f"Preserve outlet_group, wire_service, duplicate_cluster, and selection_rationale for each article when available.\n"
+            f"{mcp_instruction}"
             f"For each article, you MUST determine:\n"
             f"- bias_category: Classify based on the article's actual tone, framing, and content — NOT by publisher name alone. "
             f"Use 'Left' if the article emphasizes progressive arguments, social justice, or government intervention; "

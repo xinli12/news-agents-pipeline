@@ -1,15 +1,9 @@
-import os
 import re
 
 from google.adk.agents import Agent
 
+from agents.config import resolve_model as _resolve_model
 from agents.schemas import ExpertDomainSelection, ExpertOpinion, RoundtableSummary
-
-
-def _resolve_model(model_name: str | None) -> str:
-    if model_name is None:
-        return os.environ.get("CURRENT_MODEL", "gemini-3.1-flash-lite")
-    return model_name
 
 
 def domain_slug(domain: str) -> str:

@@ -30,8 +30,8 @@ def test_dispute_agent_contract_is_preserved() -> None:
     assert agent.name == "dispute_agent"
     assert agent.output_schema == DisputeList
     assert agent.output_key == "disputes_data"
-    assert "under-supported" in agent.instruction
-    assert "wire-service" in agent.instruction
+    assert "under-supported" in str(agent.instruction)
+    assert "wire-service" in str(agent.instruction)
 
 
 def test_bias_agent_contract_is_preserved_for_perspective_agent() -> None:
@@ -43,8 +43,8 @@ def test_bias_agent_contract_is_preserved_for_perspective_agent() -> None:
     assert agent.name == "bias_agent"
     assert agent.output_schema == PerspectiveProfile
     assert agent.output_key == "bias_data"
-    assert "Perspective Agent" in agent.instruction
-    assert "classification axis" in agent.instruction
+    assert "Perspective Agent" in str(agent.instruction)
+    assert "classification axis" in str(agent.instruction)
 
 
 def test_fact_schema_supports_traceable_evidence() -> None:
@@ -283,7 +283,7 @@ def test_expert_pipeline_factories() -> None:
     )
     assert expert.name == "expert_constitutional_law_specialist"
     assert expert.output_schema == ExpertOpinion
-    assert "Constitutional Law Specialist" in expert.instruction
+    assert "Constitutional Law Specialist" in str(expert.instruction)
     assert search_authoritative_data in expert.tools
 
     # Simple smoke test for the tool function

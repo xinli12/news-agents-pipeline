@@ -24,6 +24,7 @@ dependencies = [
     "beautifulsoup4",
     "lxml",
     "google-genai",
+    "mcp>=1.28.1",
 ]
 requires-python = ">=3.11,<3.14"
 
@@ -77,15 +78,11 @@ python-version = "3.11"
 exclude = [".venv/**"]
 
 [tool.ty.rules]
-# Ignore common issues with third-party libraries and dynamic code patterns
-unresolved-import = "ignore"
+# Ignore rules that only fire on third-party dynamic typing (google-adk/genai)
 unresolved-attribute = "ignore"
 invalid-argument-type = "ignore"
 invalid-assignment = "ignore"
-invalid-return-type = "ignore"
-possibly-missing-attribute = "ignore"
 not-subscriptable = "ignore"
-deprecated = "ignore"
 
 [tool.codespell]
 ignore-words-list = "rouge"
