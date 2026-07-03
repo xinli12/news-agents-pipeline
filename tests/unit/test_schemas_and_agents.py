@@ -155,21 +155,22 @@ def test_perspective_schema_supports_axis_and_inference_metadata() -> None:
     ]
 
 
-def test_input_validation_schema_supports_new_actions() -> None:
-    from agents.schemas import InputValidationResult
+def test_input_review_schema_supports_query_repair_options() -> None:
+    from agents.schemas import TopicReviewResult
 
-    result = InputValidationResult(
-        action="accept_with_notification",
-        is_news_related=True,
-        explanation="The topic is likely news-related but very broad.",
-        notification_message="Your query is broad. Consider specifying a region or date.",
-        converted_query="Keir Starmer recent news",
+    review = TopicReviewResult(
+        is_safe=True,
+        is_news_relevant=True,
+        suggested_query_formulation="Keir Starmer recent news",
+        input_issue_type="fragment",
+        suggested_options=["Recent developments", "Full political timeline"],
+        auto_modified=True,
+        needs_user_confirmation=True,
+        confidence=0.72,
     )
 
-    assert result.action == "accept_with_notification"
-    assert result.is_news_related is True
-    assert result.notification_message == "Your query is broad. Consider specifying a region or date."
-    assert result.converted_query == "Keir Starmer recent news"
+    assert review.auto_modified is True
+    assert review.suggested_options[0] == "Recent developments"
 
 
 def test_article_list_schema_supports_search_verification_metadata() -> None:
@@ -178,13 +179,13 @@ def test_article_list_schema_supports_search_verification_metadata() -> None:
     article_list = ArticleList(
         topic="Example topic",
         query_used="Example topic latest news",
-        search_status="Low",
+        search_status="insufficient_corroboration",
         verification_summary="Only one distinct source was found.",
         warnings=["Do not continue without more sources."],
         articles=[],
     )
 
-    assert article_list.search_status == "Low"
+    assert article_list.search_status == "insufficient_corroboration"
     assert article_list.warnings == ["Do not continue without more sources."]
 
 

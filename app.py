@@ -340,6 +340,7 @@ def join_or_dash(items: list[str] | None) -> str:
 def count_items(items: list | None) -> int:
     return len(items or [])
 
+
 def friendly_agent_name(name: str | None) -> str:
     display_names = {
         "review_agent": "Input Check Agent",
@@ -495,21 +496,29 @@ def render_evidence_items(
 def render_input_review(review: dict) -> None:
     if not review:
         return
-    action = review.get("action", "accept")
-    explanation = review.get("explanation", "")
-    notification = review.get("notification_message", "")
-    
-    chips = [(action.replace("_", " ").title(), "good" if "accept" in action or action == "convert" else "warn")]
-    if review.get("is_news_related") is True:
-        chips.append(("News Relevant", "good"))
-    else:
-        chips.append(("Not News Relevant", "warn"))
+    issue = review.get("input_issue_type", "clear_news_query")
+    auto_modified = review.get("auto_modified", False)
+    needs_confirm = review.get("needs_user_confirmation", False)
+    confidence = clamp_score(review.get("confidence", 1.0))
+    chips = [(issue.replace("_", " ").title(), "good")]
+    if auto_modified:
+        chips.append(("Auto neutralized", "warn"))
+    if needs_confirm:
+        chips.append(("Broad query", "warn"))
+    chips.append(
+        (f"Input confidence {confidence:.0%}", "good" if confidence > 0.75 else "warn")
+    )
     render_chips(chips)
 
-    if explanation:
-        st.markdown(f"**Decision Reason**: {explanation}")
-    if notification:
-        st.info(notification)
+    message = review.get("user_message") or review.get("rejection_reason")
+    if message:
+        st.caption(message)
+
+    options = review.get("suggested_options") or []
+    if options:
+        with st.expander("Suggested query refinements", expanded=False):
+            for option in options:
+                st.markdown(f"- {option}")
 
 
 def article_rows(articles: list[dict]) -> list[dict]:
@@ -606,6 +615,7 @@ def render_public_summary(results: dict) -> None:
     public_report = results.get("public_report") or {}
     audit_warnings = results.get("audit_warnings") or []
     articles_data = results.get("articles") or {}
+    review = results.get("review_result") or {}
     recruitment = results.get("recruitment") or {}
 
     if audit_warnings:
@@ -645,6 +655,8 @@ def render_public_summary(results: dict) -> None:
         chips.append(
             (f"Complexity: {complexity}", "good" if complexity == "low" else "warn")
         )
+    if review.get("suggested_query_formulation"):
+        chips.append((f"Query: {review.get('suggested_query_formulation')}", "good"))
     render_chips(chips)
 
     if public_report.get("narrative_summary"):
@@ -1371,14 +1383,131 @@ if submit:
     if not topic.strip():
         st.warning("Enter a topic, headline, URL, or article excerpt.")
     else:
-        st.session_state["awaiting_confirmation"] = False
-        start_workflow(
-            topic.strip(),
-            selected_model,
-            enable_editor,
-            bypass_input_check=False,
+        with st.spinner("Checking input suitability..."):
+            import asyncio
+
+            from agents.coordinator import NewsAnalysisCoordinator
+
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                coordinator = NewsAnalysisCoordinator()
+                review_result = loop.run_until_complete(
+                    coordinator.run_input_check(topic.strip(), selected_model)
+                )
+            except Exception as e:
+                st.error(f"Input Check Agent error: {e}")
+                review_result = None
+            finally:
+                loop.close()
+
+        if review_result:
+            is_news = review_result.get("is_news_relevant", True)
+            needs_confirm = review_result.get("needs_user_confirmation", False)
+            auto_mod = review_result.get("auto_modified", False)
+            suggested_options = review_result.get("suggested_options") or []
+            issue_type = review_result.get("input_issue_type", "clear_news_query")
+
+            if (
+                issue_type != "clear_news_query"
+                or not is_news
+                or needs_confirm
+                or auto_mod
+                or suggested_options
+            ):
+                st.session_state["awaiting_confirmation"] = True
+                st.session_state["review_result"] = review_result
+                st.session_state["original_topic"] = topic.strip()
+                st.session_state["confirmed_model"] = selected_model
+                st.rerun()
+            else:
+                st.session_state["awaiting_confirmation"] = False
+                start_workflow(
+                    topic.strip(),
+                    selected_model,
+                    enable_editor,
+                    bypass_input_check=True,
+                )
+                st.rerun()
+
+# Render interactive validation confirmation box
+if st.session_state.get("awaiting_confirmation"):
+    review = st.session_state["review_result"]
+    original_topic = st.session_state["original_topic"]
+    confirmed_model = st.session_state["confirmed_model"]
+
+    with st.container(border=True):
+        issue_type = review.get("input_issue_type", "unsuitable")
+        is_clear_refinement = (
+            issue_type == "clear_news_query"
+            and review.get("is_safe", True)
+            and review.get("is_news_relevant", True)
+            and not review.get("needs_user_confirmation", False)
         )
-        st.rerun()
+        if is_clear_refinement:
+            st.info(
+                "**Query refinement available**: The Input Check Agent found a clearer formulation."
+            )
+        else:
+            st.warning(
+                "⚠️ **Input validation check required**: The Input Check Agent flagged this query."
+            )
+
+        user_msg = (
+            review.get("user_message")
+            or review.get("rejection_reason")
+            or "This query needs refinement."
+        )
+        st.markdown(f"**Issue Detected**: {issue_type.replace('_', ' ').title()}")
+        st.info(f"**Message**: {user_msg}")
+
+        suggested_q = review.get("suggested_query_formulation", original_topic)
+        if suggested_q != original_topic:
+            st.markdown(f"**Suggested Formulation**: `{suggested_q}`")
+
+        options = review.get("suggested_options") or []
+
+        btn_cols = st.columns([1, 1, 1])
+
+        if suggested_q != original_topic:
+            refined_button_label = (
+                "Use refined query" if is_clear_refinement else "Use suggested query"
+            )
+            if btn_cols[0].button(
+                refined_button_label, type="primary", use_container_width=True
+            ):
+                st.session_state["awaiting_confirmation"] = False
+                start_workflow(
+                    suggested_q, confirmed_model, enable_editor, bypass_input_check=True
+                )
+                st.rerun()
+
+        if btn_cols[1].button(
+            "Continue with original", type="secondary", use_container_width=True
+        ):
+            st.session_state["awaiting_confirmation"] = False
+            start_workflow(
+                original_topic, confirmed_model, enable_editor, bypass_input_check=True
+            )
+            st.rerun()
+
+        if btn_cols[2].button("Cancel", type="secondary", use_container_width=True):
+            st.session_state["awaiting_confirmation"] = False
+            st.rerun()
+
+        if options:
+            st.markdown("### Suggested refinement paths:")
+            for idx, option in enumerate(options, 1):
+                if st.button(
+                    f"Option {idx}: {option}",
+                    key=f"opt_btn_{idx}",
+                    use_container_width=True,
+                ):
+                    st.session_state["awaiting_confirmation"] = False
+                    start_workflow(
+                        option, confirmed_model, enable_editor, bypass_input_check=True
+                    )
+                    st.rerun()
 
 
 # --- Display Content Area ---
@@ -1391,17 +1520,20 @@ if "shared_state" not in st.session_state:
 state = st.session_state["shared_state"]
 status = state["status"]
 results = state["results"]
+review = results.get("review_result") or {}
 step_statuses = state.get("step_statuses") or {}
 
 # Check for immediate exits (Input Rejection or early search failures)
 if results.get("reviewed") is False:
     st.error("Input check rejected this request.")
-    review = results.get("review_result") or {}
     render_input_review(review)
+    if review.get("suggested_query_formulation"):
+        st.info(f"Suggested query: {review['suggested_query_formulation']}")
     st.stop()
 
 if results.get("search_failed"):
     st.warning("Search could not establish enough credible support for this topic.")
+    render_input_review(review)
     search_result = results.get("search_result") or results.get("articles") or {}
     st.markdown(f"**Query used:** {results.get('optimized_query', '')}")
     st.markdown(
@@ -1515,15 +1647,6 @@ with st.sidebar:
 )
 
 with tab_briefing:
-    review_res = results.get("review_result") or {}
-    if review_res.get("action") == "accept_with_notification":
-        st.warning(f"⚠️ **Input validation note**: {review_res.get('notification_message')}")
-
-    search_res = results.get("articles") or {}
-    search_status_val = str(search_res.get("search_status") or "").lower()
-    if search_status_val == "moderate":
-        st.warning("⚠️ **Sparse News Pool**: Very few unique search sources (3 to 5 unique articles) were found for this topic. Downstream analysis may be thin or limited.")
-
     public_report = results.get("public_report") or {}
     if not public_report:
         st.markdown(
