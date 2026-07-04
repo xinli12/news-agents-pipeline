@@ -3,6 +3,7 @@ import os
 from google.adk.agents import Agent
 
 from agents.schemas import InputValidationResult
+from agents.scraper import scrape_article_text
 
 
 def get_input_check_agent(model_name: str | None = None) -> Agent:
@@ -27,13 +28,21 @@ def get_input_check_agent(model_name: str | None = None) -> Agent:
             "definitions like 'What is a Fourier transform?', or general chat). Set action to 'reject_with_confirmation', "
             "is_news_related to false, and populate notification_message asking the user if they want to revise their query to add news context.\n"
             "4. Convert: Use when the input contains a URL or a full article copy-paste.\n"
+            "   - If the input is a URL: You MUST call your 'scrape_article_text' tool first to read the article contents.\n"
             "   - Determine if the URL or article copy-paste is news-related.\n"
-            "   - If it is news-related: set action to 'convert', is_news_related to true, extract the core news event or topic, "
-            "formulate it as a clean, concise, keyword-based search query in 'converted_query', and explain the decision in 'explanation'.\n"
+            "   - If it is news-related: set action to 'convert', is_news_related to true, extract the core news event or topic "
+            "from the scraped article text, and formulate it as a clean, concise, keyword-based search query in 'converted_query' "
+            "that is optimized for search, summarizes the main content, and avoids metadata or URL fragments. "
+            "Examples of clean, concise, search-optimized queries:\n"
+            "     * 'UK inflation rises unexpectedly June 2026'\n"
+            "     * 'OpenAI releases new AI safety framework'\n"
+            "     * 'Israel and Hamas ceasefire negotiations'\n"
+            "     Avoid queries like: 'BBC news article c4gy700j0eko'. Explain the decision in 'explanation'.\n"
             "   - If it is NOT news-related: set action to 'reject_with_confirmation', is_news_related to false, set converted_query to null, "
             "and use notification_message to explain the rejection and ask if they would like to revise it.\n\n"
             "Always output valid JSON complying with the InputValidationResult schema."
         ),
+        tools=[scrape_article_text],
         output_schema=InputValidationResult,
         output_key="review_result",
     )
