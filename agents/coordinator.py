@@ -205,6 +205,19 @@ class NewsAnalysisCoordinator:
         """Helper to invoke an ADK Agent using the Runner and retrieve the structured output state."""
         logger = logging.getLogger(__name__)
 
+        import datetime
+        now = datetime.datetime.now()
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        local_date = now.strftime('%B %d, %Y')
+        utc_date = now_utc.strftime('%B %d, %Y')
+        current_date_prefix = (
+            f"The current date is {local_date} (local system time) / {utc_date} (UTC). "
+            f"Note: news articles may be dated 1 day ahead or behind due to international timezone differences; "
+            f"treat such minor discrepancies as valid and current, not as future events or hallucinations.\n\n"
+        )
+        if hasattr(agent, "instruction") and agent.instruction and not agent.instruction.startswith("The current date is"):
+            agent.instruction = current_date_prefix + agent.instruction
+
         for attempt in range(1, max_retries + 1):
             try:
                 agent_session_id = f"{session_id}_{agent.name}_{attempt}"

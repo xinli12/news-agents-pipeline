@@ -17,14 +17,9 @@ class Article(pydantic.BaseModel):
     source: str
     published_date: str
     bias_category: str  # "Left", "Center", "Right", "Independent", "Unknown"
-    media_scale: str  # "Local", "National", "International"
-    media_type: str  # "Mainstream", "Independent"
     summary: str
     full_content_snippet: str
-    source_reliability_score: float  # 0.0 to 1.0
     objectivity_score: float  # 0.0 to 1.0
-    outlet_group: str = ""
-    wire_service: str | None = None
     duplicate_cluster: str = ""
     selection_rationale: str = ""
 

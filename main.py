@@ -111,9 +111,6 @@ async def run_cli(topic: str):
                 sources_table.add_column("Title & URL", style="cyan")
                 sources_table.add_column("Source", style="green")
                 sources_table.add_column("Bias Rating", justify="center")
-                sources_table.add_column("Scale", justify="center")
-                sources_table.add_column("Type", justify="center")
-                sources_table.add_column("Source Reliability", justify="center")
                 sources_table.add_column("Snippet Objectivity", justify="center")
 
                 for idx, art in enumerate(payload.get("articles", []), 1):
@@ -129,9 +126,6 @@ async def run_cli(topic: str):
                     )
 
                     title_url = f"[bold]{art.get('title', '')}[/bold]\n[dim]{art.get('url', '')}[/dim]"
-                    rel_meter = make_score_meter(
-                        art.get("source_reliability_score", 0.0), width=6
-                    )
                     obj_meter = make_score_meter(
                         art.get("objectivity_score", 0.0), width=6
                     )
@@ -141,9 +135,6 @@ async def run_cli(topic: str):
                         title_url,
                         art.get("source", ""),
                         f"[bold {bias_color}]{bias}[/bold {bias_color}]",
-                        art.get("media_scale", ""),
-                        art.get("media_type", ""),
-                        rel_meter,
                         obj_meter,
                     )
                 console.print(sources_table)
@@ -609,9 +600,6 @@ def display_results(results: dict):
     sources_table.add_column("Title & URL", style="cyan")
     sources_table.add_column("Source", style="green")
     sources_table.add_column("Bias Rating", justify="center")
-    sources_table.add_column("Scale", justify="center")
-    sources_table.add_column("Type", justify="center")
-    sources_table.add_column("Source Reliability", justify="center")
     sources_table.add_column("Snippet Objectivity", justify="center")
 
     for idx, art in enumerate(articles_data.get("articles", []), 1):
@@ -629,7 +617,6 @@ def display_results(results: dict):
         title_url = (
             f"[bold]{art.get('title', '')}[/bold]\n[dim]{art.get('url', '')}[/dim]"
         )
-        rel_meter = make_score_meter(art.get("source_reliability_score", 0.0), width=6)
         obj_meter = make_score_meter(art.get("objectivity_score", 0.0), width=6)
 
         sources_table.add_row(
@@ -637,9 +624,6 @@ def display_results(results: dict):
             title_url,
             art.get("source", ""),
             f"[bold {bias_color}]{bias}[/bold {bias_color}]",
-            art.get("media_scale", ""),
-            art.get("media_type", ""),
-            rel_meter,
             obj_meter,
         )
 

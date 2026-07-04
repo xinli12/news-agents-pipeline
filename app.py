@@ -521,11 +521,6 @@ def article_rows(articles: list[dict]) -> list[dict]:
                 "Title": article.get("title", ""),
                 "URL": article.get("url", ""),
                 "Perspective": article.get("bias_category", ""),
-                "Scale": article.get("media_scale", ""),
-                "Type": article.get("media_type", ""),
-                "Outlet Group": article.get("outlet_group", ""),
-                "Wire": article.get("wire_service") or "",
-                "Reliability": clamp_score(article.get("source_reliability_score")),
                 "Objectivity": clamp_score(article.get("objectivity_score")),
                 "Summary": article.get("summary", ""),
             }
@@ -545,9 +540,6 @@ def render_source_table(articles: list[dict]) -> None:
         df,
         column_config={
             "URL": st.column_config.LinkColumn("URL"),
-            "Reliability": st.column_config.ProgressColumn(
-                "Reliability", min_value=0.0, max_value=1.0, format="%.2f"
-            ),
             "Objectivity": st.column_config.ProgressColumn(
                 "Objectivity", min_value=0.0, max_value=1.0, format="%.2f"
             ),
@@ -568,15 +560,13 @@ def render_landscape(articles_data: dict) -> None:
     rows = article_rows(articles)
     df = pd.DataFrame(rows)
     total = len(rows)
-    avg_rel = sum(row["Reliability"] for row in rows) / total
     avg_obj = sum(row["Objectivity"] for row in rows) / total
     source_balance = articles_data.get("source_balance") or {}
 
-    cols = st.columns(4)
+    cols = st.columns(3)
     cols[0].metric("Sources", total)
-    cols[1].metric("Avg reliability", f"{avg_rel:.0%}")
-    cols[2].metric("Avg objectivity", f"{avg_obj:.0%}")
-    cols[3].metric("Search status", articles_data.get("search_status", "verified"))
+    cols[1].metric("Avg objectivity", f"{avg_obj:.0%}")
+    cols[2].metric("Search status", articles_data.get("search_status", "verified"))
 
     if articles_data.get("verification_summary"):
         st.info(articles_data["verification_summary"])
@@ -585,21 +575,10 @@ def render_landscape(articles_data: dict) -> None:
         with st.expander("Candidate pool balance", expanded=False):
             st.json(source_balance)
 
-    chart_col_1, chart_col_2 = st.columns(2)
-    with chart_col_1:
-        st.markdown("#### Source mix")
-        counts = df["Perspective"].value_counts().reset_index()
-        counts.columns = ["Perspective", "Count"]
-        st.bar_chart(counts, x="Perspective", y="Count", color="Perspective")
-    with chart_col_2:
-        st.markdown("#### Reliability vs objectivity")
-        st.scatter_chart(
-            df,
-            x="Reliability",
-            y="Objectivity",
-            color="Perspective",
-            size="Reliability",
-        )
+    st.markdown("#### Source mix")
+    counts = df["Perspective"].value_counts().reset_index()
+    counts.columns = ["Perspective", "Count"]
+    st.bar_chart(counts, x="Perspective", y="Count", color="Perspective")
 
 
 def render_public_summary(results: dict) -> None:
@@ -1216,6 +1195,19 @@ def render_qa_tab(results: dict) -> None:
                     f"User Question: {chat_prompt}"
                 )
 
+                import datetime
+                now = datetime.datetime.now()
+                now_utc = datetime.datetime.now(datetime.timezone.utc)
+                local_date = now.strftime('%B %d, %Y')
+                utc_date = now_utc.strftime('%B %d, %Y')
+                current_date_prefix = (
+                    f"The current date is {local_date} (local system time) / {utc_date} (UTC). "
+                    f"Note: news articles may be dated 1 day ahead or behind due to international timezone differences; "
+                    f"treat such minor discrepancies as valid and current, not as future events or hallucinations.\n\n"
+                )
+                if hasattr(qa_agent, "instruction") and qa_agent.instruction and not qa_agent.instruction.startswith("The current date is"):
+                    qa_agent.instruction = current_date_prefix + qa_agent.instruction
+
                 runner = Runner(
                     agent=qa_agent,
                     app_name="news_app",
@@ -1543,7 +1535,7 @@ with tab_sources:
         st.markdown(
             '<div class="loading-card">'
             "<h3>🔍 Source Crawling In Progress</h3>"
-            "<p>The Search Agent is currently querying credible global news databases and checking source reliability...</p>"
+            "<p>The Search Agent is currently querying credible global news databases and selecting reliable articles...</p>"
             "</div>",
             unsafe_allow_html=True,
         )
