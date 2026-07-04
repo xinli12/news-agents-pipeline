@@ -150,6 +150,68 @@ def classify_articles_bias_batch(articles: list[dict]) -> dict[str, str]:
         return {}
 
 
+def classify_topic_characteristics(topic: str, articles: list[dict]) -> dict:
+    """Determine if a topic/article pool is political/viewpoint-oriented vs non-political/factual,
+    and classify its complexity (Simple, Moderate, High).
+    """
+    if not articles:
+        return {"is_viewpoint_oriented": False, "complexity": "Simple"}
+    try:
+        import os
+
+        from google import genai
+
+        model_name = os.environ.get("CURRENT_MODEL", "gemini-3.1-flash-lite")
+        client = genai.Client()
+
+        # Prepare a sample of the articles for analyzing the topic characteristics
+        sample_articles = []
+        for idx, art in enumerate(articles[:10]):
+            sample_articles.append(
+                {
+                    "title": art.get("title", "N/A"),
+                    "source": art.get("source", "N/A"),
+                    "snippet": art.get("body", "N/A"),
+                }
+            )
+
+        prompt = (
+            f"Analyze the search topic '{topic}' and the following sample of search results to determine:\n"
+            "1. Topic type classification:\n"
+            "   - 'viewpoint-oriented': If the topic/articles cover political, public policy, legal, economic, or other topics with multiple conflicting or diverse viewpoints/interpretations.\n"
+            "   - 'factual-oriented': If the topic is non-political or primarily factual (e.g., sports, science, weather, technology, or a single straightforward news event with little disagreement or analysis).\n"
+            "2. Complexity/diversity level:\n"
+            "   - 'Simple': The search results primarily describe a single event with little disagreement or analysis.\n"
+            "   - 'Moderate': The search results cover multiple aspects of the topic, such as different stakeholders, analyses, or developments.\n"
+            "   - 'High': The search results reveal a complex, evolving, or controversial topic with multiple independent viewpoints.\n\n"
+            "Respond strictly in JSON format as a dictionary with keys 'is_viewpoint_oriented' (boolean) and 'complexity' (string, either 'Simple', 'Moderate', or 'High').\n"
+            "Do not include any formatting or explanation outside the JSON.\n\n"
+            f"Sample articles:\n{json.dumps(sample_articles, indent=2)}"
+        )
+
+        response = client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+            config={
+                "response_mime_type": "application/json",
+            },
+        )
+        res = json.loads(response.text)
+        is_viewpoint = bool(res.get("is_viewpoint_oriented", False))
+        complexity = str(res.get("complexity", "Moderate"))
+        if complexity not in ["Simple", "Moderate", "High"]:
+            complexity = "Moderate"
+        return {"is_viewpoint_oriented": is_viewpoint, "complexity": complexity}
+    except Exception as e:
+        import sys
+
+        print(
+            f"Warning: Topic classification failed: {e!s}. Falling back to default values.",
+            file=sys.stderr,
+        )
+        return {"is_viewpoint_oriented": False, "complexity": "Moderate"}
+
+
 def get_live_news_articles(topic: str) -> str:
     """Searches the web for live news articles on a given topic and scrapes full texts in parallel.
 
@@ -158,9 +220,9 @@ def get_live_news_articles(topic: str) -> str:
     """
     try:
         with DDGS() as ddgs:
-            # Fetch up to 40 articles to ensure we have a diverse pool to choose from
+            # Fetch up to 35 articles to ensure we have a diverse pool to choose from
             try:
-                results = list(ddgs.news(topic, max_results=40))
+                results = list(ddgs.news(topic, max_results=35))
             except Exception as news_err:
                 # Fallback to general text search if news search is rate-limited/blocked
                 import sys
@@ -170,7 +232,7 @@ def get_live_news_articles(topic: str) -> str:
                     file=sys.stderr,
                 )
                 try:
-                    text_results = list(ddgs.text(topic, max_results=40))
+                    text_results = list(ddgs.text(topic, max_results=35))
                     results = []
                     for r in text_results:
                         url = r.get("href", "")
@@ -214,6 +276,19 @@ def get_live_news_articles(topic: str) -> str:
                     "The search produced too few distinct news sources to support a multi-source analysis."
                 )
 
+            # Classify topic type and complexity
+            topic_info = classify_topic_characteristics(topic, results)
+            is_viewpoint = topic_info["is_viewpoint_oriented"]
+            complexity = topic_info["complexity"]
+
+            # Determine maximum articles to scrape based on complexity
+            if complexity == "Simple":
+                max_to_scrape = 6
+            elif complexity == "Moderate":
+                max_to_scrape = 12
+            else:
+                max_to_scrape = 20
+
             # Categorize the search results by their article-level bias dynamically
             lefts = []
             rights = []
@@ -236,27 +311,41 @@ def get_live_news_articles(topic: str) -> str:
                 else:
                     others.append(r)
 
-            # Select up to 20 articles in a balanced round-robin way
+            # Select candidates based on selection logic
             selected_results = []
-            max_articles = 20
-            bucket_counts = {
-                "LEFT": len(lefts),
-                "RIGHT": len(rights),
-                "CENTER": len(centers),
-                "OTHER": len(others),
-            }
-            queues = [lefts, rights, centers, others]
+            if is_viewpoint:
+                # Use round-robin balanced selection
+                bucket_counts = {
+                    "LEFT": len(lefts),
+                    "RIGHT": len(rights),
+                    "CENTER": len(centers),
+                    "OTHER": len(others),
+                }
+                queues = [lefts, rights, centers, others]
 
-            while len(selected_results) < max_articles:
-                added = False
-                for q in queues:
-                    if q:
-                        selected_results.append(q.pop(0))
-                        added = True
-                        if len(selected_results) >= max_articles:
-                            break
-                if not added:
-                    break
+                while len(selected_results) < max_to_scrape:
+                    added = False
+                    for q in queues:
+                        if q:
+                            selected_results.append(q.pop(0))
+                            added = True
+                            if len(selected_results) >= max_to_scrape:
+                                break
+                    if not added:
+                        break
+            else:
+                # Prioritize relevance and source quality (bubble wire services first, keeping search relevance rank)
+                sorted_by_quality = sorted(
+                    enumerate(results),
+                    key=lambda x: (0 if x[1].get("wire_service") else 1, x[0])
+                )
+                selected_results = [r for _, r in sorted_by_quality[:max_to_scrape]]
+                bucket_counts = {
+                    "LEFT": sum(1 for r in selected_results if articles_bias_map.get(r.get("url", ""), "") == "LEFT"),
+                    "RIGHT": sum(1 for r in selected_results if articles_bias_map.get(r.get("url", ""), "") == "RIGHT"),
+                    "CENTER": sum(1 for r in selected_results if articles_bias_map.get(r.get("url", ""), "") == "CENTER"),
+                    "OTHER": sum(1 for r in selected_results if articles_bias_map.get(r.get("url", ""), "") == "OTHER"),
+                }
 
             # Scrape all selected articles in parallel
             urls = [r.get("url") for r in selected_results if r.get("url")]
@@ -273,9 +362,11 @@ def get_live_news_articles(topic: str) -> str:
                 f"RAW_CANDIDATES: {raw_count}",
                 f"UNIQUE_CANDIDATES_AFTER_DEDUP: {len(results)}",
                 f"SELECTED_ARTICLES: {len(selected_results)}",
-                "SOURCE_BALANCE: "
+                f"SOURCE_BALANCE: "
                 f"LEFT={bucket_counts['LEFT']}, RIGHT={bucket_counts['RIGHT']}, "
                 f"CENTER={bucket_counts['CENTER']}, OTHER={bucket_counts['OTHER']}",
+                f"TOPIC_COMPLEXITY: {complexity}",
+                f"TOPIC_TYPE: {'viewpoint-oriented' if is_viewpoint else 'factual-oriented'}",
                 "WIRE_GROUPS: "
                 + ("; ".join(wire_groups[:8]) if wire_groups else "None detected"),
                 "---",
@@ -332,10 +423,18 @@ def get_search_agent(model_name: str | None = None) -> Agent:
             f"CRITICAL: Search engine date metadata (the 'Date' field) can sometimes be incorrect or represent early drafts/previews. "
             f"Always verify dates, timelines, and match/event results from the actual article text and content snippets, "
             f"and cross-reference multiple sources if dates differ.\n"
-            f"CRITICAL: You MUST process and include at least 12 to 15 articles in the 'articles' list in your response. "
-            f"Do NOT limit your output to only a few (2-4) articles. Process as many articles from the search results as possible (at least 12, up to 18), "
-            f"ensuring a balanced representation across different viewpoints (Left, Right, Center, and Independent).\n"
-            f"CRITICAL: You MUST select articles only from reliable news sources, such as mainstream wires (e.g., Reuters, AP, AFP), "
+            f"CRITICAL: The number of articles you select and include in the 'articles' list MUST depend on the diversity and complexity of the search results "
+            f"(or as many as possible if search results are limited), based on the 'TOPIC_COMPLEXITY' returned by the tool:\n"
+            f"- 'Simple' (primarily describes a single event with little disagreement or analysis): Select 3 to 6 articles.\n"
+            f"- 'Moderate' (covers multiple aspects of the topic, such as different stakeholders, analyses, or developments): Select 6 to 10 articles.\n"
+            f"- 'High' (reveals a complex, evolving, or controversial topic with multiple independent viewpoints): Select 10 to 15 articles.\n"
+            f"If the tool returns fewer unique articles than the target range, select as many available articles as possible.\n"
+            f"CRITICAL: You must follow the selection logic and method based on 'TOPIC_TYPE' returned by the tool:\n"
+            f"- If the TOPIC_TYPE is 'viewpoint-oriented' (covering political, public policy, legal, economic, or other topics with multiple viewpoints): "
+            f"Use the round-robin balanced selection provided in the search results for a balanced representation of Left, Right, and Center perspectives when such perspectives are available.\n"
+            f"- If the TOPIC_TYPE is 'factual-oriented' (covering topics that are non-political or primarily factual, e.g., sports, science, weather, or a single news event): "
+            f"Prioritize relevance and source quality over viewpoint balance (i.e. select the articles in the order of relevance and source quality as returned by the tool).\n"
+            f"CRITICAL: You MUST search articles only from reliable news sources, such as mainstream wires (e.g., Reuters, AP, AFP), "
             f"large mainstream outlets (e.g., BBC, NYT, WSJ News, CNN, Fox News), or reputable niche/partisan/independent outlets (e.g., Reason, Democracy Now, ProPublica). "
             f"You MUST exclude unreliable sources, such as hyper-partisan blogs, anonymous publishers, conspiracy-focused sites, etc.\n"
             f"Do not treat the same wire-service story or likely reprint cluster as independent corroboration. "
