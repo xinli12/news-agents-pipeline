@@ -16,7 +16,7 @@ class Article(pydantic.BaseModel):
     url: str
     source: str
     published_date: str
-    bias_category: str  # "Left", "Center", "Right", "Independent", "Unknown"
+    bias_category: str  # "Left", "Center", "Right", "Other/Non-Political"
     summary: str
     full_content_snippet: str
     neutrality: str  # "HIGH_NEUTRALITY", "MEDIUM_NEUTRALITY", "LOW_NEUTRALITY"

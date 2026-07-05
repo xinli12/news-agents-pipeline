@@ -107,12 +107,12 @@ def classify_articles_bias_batch(articles: list[dict]) -> dict[str, str]:
 
         prompt = (
             "Analyze the following list of news articles (including their title, source, and search snippet) "
-            "and classify the political/ideological bias of each article as 'LEFT', 'RIGHT', 'CENTER', or 'OTHER'.\n"
+            "and classify the political/ideological bias of each article as 'LEFT', 'RIGHT', 'CENTER', or 'OTHER/NON-POLITICAL'.\n"
             "Classification guidelines:\n"
-            "- 'LEFT': Left-leaning framing, focusing heavily on progressive arguments, social justice, government regulation/safety nets, or critiques of corporate power.\n"
-            "- 'RIGHT': Right-leaning framing, focusing heavily on conservative arguments, market-driven solutions, tax cuts, individual liberties, critiques of government regulation/spending, or national security.\n"
-            "- 'CENTER': Factual, objective reporting with balanced arguments, descriptive tone, and no obvious ideological bias (e.g. wire reports like Reuters/AP, straightforward informative coverage).\n"
-            "- 'OTHER': Use for articles that are non-political (e.g. sports, technology, science, lifestyle, recipes, entertainment) or cannot be classified.\n\n"
+            "- 'LEFT': The article primarily frames issues from a progressive perspective, emphasizing themes such as social justice, government intervention, labor rights, environmental protection, or critiques of corporate power.\n"
+            "- 'RIGHT': The article primarily frames issues from a conservative perspective, emphasizing themes such as free markets, limited government, or traditional values.\n"
+            "- 'CENTER': The article reports facts in a balanced, descriptive, and neutral manner without clearly advocating a particular political perspective.\n"
+            "- 'OTHER/NON-POLITICAL': The article is non-political (e.g., science, technology, sports, or entertainment), has no obvious political perspective, or presents a viewpoint that does not fit the other categories.\n\n"
             "Respond strictly in JSON format as a flat dictionary mapping each article's 'id' (as a string) to its bias category.\n"
             "Do not include any formatting or explanation outside the JSON.\n\n"
             f"Articles:\n{json.dumps(articles_to_classify, indent=2)}"
@@ -300,7 +300,7 @@ def get_live_news_articles(topic: str) -> str:
 
             for r in results:
                 url = r.get("url", "")
-                bias = articles_bias_map.get(url, "OTHER")
+                bias = articles_bias_map.get(url, "OTHER/NON-POLITICAL")
 
                 if bias == "LEFT":
                     lefts.append(r)
@@ -319,7 +319,7 @@ def get_live_news_articles(topic: str) -> str:
                     "LEFT": len(lefts),
                     "RIGHT": len(rights),
                     "CENTER": len(centers),
-                    "OTHER": len(others),
+                    "OTHER/NON-POLITICAL": len(others),
                 }
                 queues = [lefts, rights, centers, others]
 
@@ -344,7 +344,7 @@ def get_live_news_articles(topic: str) -> str:
                     "LEFT": sum(1 for r in selected_results if articles_bias_map.get(r.get("url", ""), "") == "LEFT"),
                     "RIGHT": sum(1 for r in selected_results if articles_bias_map.get(r.get("url", ""), "") == "RIGHT"),
                     "CENTER": sum(1 for r in selected_results if articles_bias_map.get(r.get("url", ""), "") == "CENTER"),
-                    "OTHER": sum(1 for r in selected_results if articles_bias_map.get(r.get("url", ""), "") == "OTHER"),
+                    "OTHER/NON-POLITICAL": sum(1 for r in selected_results if articles_bias_map.get(r.get("url", ""), "") not in ["LEFT", "RIGHT", "CENTER"]),
                 }
 
             # Scrape all selected articles in parallel
@@ -364,7 +364,7 @@ def get_live_news_articles(topic: str) -> str:
                 f"SELECTED_ARTICLES: {len(selected_results)}",
                 f"SOURCE_BALANCE: "
                 f"LEFT={bucket_counts['LEFT']}, RIGHT={bucket_counts['RIGHT']}, "
-                f"CENTER={bucket_counts['CENTER']}, OTHER={bucket_counts['OTHER']}",
+                f"CENTER={bucket_counts['CENTER']}, OTHER/NON-POLITICAL={bucket_counts['OTHER/NON-POLITICAL']}",
                 f"TOPIC_COMPLEXITY: {complexity}",
                 f"TOPIC_TYPE: {'viewpoint-oriented' if is_viewpoint else 'factual-oriented'}",
                 "WIRE_GROUPS: "
@@ -440,12 +440,11 @@ def get_search_agent(model_name: str | None = None) -> Agent:
             f"Do not treat the same wire-service story or likely reprint cluster as independent corroboration. "
             f"Preserve duplicate_cluster and selection_rationale for each article when available.\n"
             f"For each article, you MUST determine:\n"
-            f"- bias_category: Classify based on the article's actual tone, framing, and content — NOT by publisher name alone. "
-            f"Use 'Left' if the article emphasizes progressive arguments, social justice, or government intervention; "
-            f"'Right' if it emphasizes conservative arguments, free-market solutions, or critiques of regulation; "
-            f"'Center' if the reporting is factual, balanced, and uses a neutral descriptive tone; "
-            f"'Independent' if it presents a non-mainstream or contrarian viewpoint (e.g., libertarian, grassroots, or investigative); "
-            f"or 'Other/Non-Political' if the article is about science, technology, sports, lifestyle, or has no obvious political/ideological bias.\n"
+            f"- bias_category: Classify based on the article's actual tone, framing, and content, NOT by publisher name alone. "
+            f"Use 'Left' if the article primarily frames issues from a progressive perspective, emphasizing themes such as social justice, government intervention, labor rights, environmental protection, or critiques of corporate power; "
+            f"'Right' if the article primarily frames issues from a conservative perspective, emphasizing themes such as free markets, limited government, or traditional values; "
+            f"'Center' if the article reports facts in a balanced, descriptive, and neutral manner without clearly advocating a particular political perspective; "
+            f"or 'Other/Non-Political' if the article is non-political (e.g., science, technology, sports, or entertainment), has no obvious political perspective, or presents a viewpoint that does not fit the other categories.\n"
             f"- neutrality: Classify the neutral/factual tone of the whole article into one of the following three classes:\n"
             f"  * HIGH_NEUTRALITY: Calm, descriptive, specific, and fact-based. Avoids emotional wording, blame-heavy framing, opinionated claims, and dramatic emphasis.\n"
             f"  * MEDIUM_NEUTRALITY: Mostly factual but contains mild interpretation, emphasis, or framing. May highlight conflict, consequences, winners or losers, or criticism, but avoids strongly emotional or sensational language.\n"

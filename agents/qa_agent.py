@@ -14,7 +14,7 @@ def get_qa_agent(model_name: str | None = None) -> Agent:
             "follow-up questions about the news analysis report, grounded in the raw news articles.\n\n"
             "You have access to the full context of the report, including:\n"
             "- The core facts and disputed claims.\n"
-            "- The media framing profiles (Left, Right, Center, Independent).\n"
+            "- The media framing profiles (Left, Right, Center, Other/Non-Political).\n"
             "- The original expert commentary from the recruited specialists.\n\n"
             "Guidelines:\n"
             "1. Answer queries in a professional, academic, non-partisan, and analytical tone.\n"
