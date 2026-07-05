@@ -8,7 +8,7 @@ The project is intended for learning and experimentation only, not commercial us
 
 | Capability | Current implementation |
 | --- | --- |
-| Input review | Checks safety and news relevance, neutralizes loaded wording, expands fragments, and proposes narrower query options. |
+| Input review | Validates user input and returns one of four actions: Accept, Accept with notification, Reject with confirmation, or Convert. |
 | Live search | Uses DuckDuckGo via `ddgs`, falls back from news search to text search, and builds a candidate pool of up to 40 raw results. |
 | Deduplication | Removes duplicate URLs and collapses likely wire-service or reprint clusters before analysis. |
 | Article enrichment | Scrapes selected articles with Jina Reader first, then BeautifulSoup/lxml as a fallback. |
@@ -22,7 +22,7 @@ The project is intended for learning and experimentation only, not commercial us
 ```mermaid
 graph TD
     U["User input"] --> R["Input Check Agent"]
-    R -->|Rejected| X["Return rejection or suggested query"]
+    R -->|Rejected| X["Return rejection/confirmation message"]
     R -->|Accepted| S["Search Agent"]
     S -->|Not corroborated| Y["Stop with search warning"]
     S -->|Candidate pool| C["Recruiter Agent"]

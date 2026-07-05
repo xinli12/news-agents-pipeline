@@ -340,7 +340,6 @@ def join_or_dash(items: list[str] | None) -> str:
 def count_items(items: list | None) -> int:
     return len(items or [])
 
-
 def friendly_agent_name(name: str | None) -> str:
     display_names = {
         "review_agent": "Input Check Agent",
@@ -496,46 +495,43 @@ def render_evidence_items(
 def render_input_review(review: dict) -> None:
     if not review:
         return
-    issue = review.get("input_issue_type", "clear_news_query")
-    auto_modified = review.get("auto_modified", False)
-    needs_confirm = review.get("needs_user_confirmation", False)
-    confidence = clamp_score(review.get("confidence", 1.0))
-    chips = [(issue.replace("_", " ").title(), "good")]
-    if auto_modified:
-        chips.append(("Auto neutralized", "warn"))
-    if needs_confirm:
-        chips.append(("Broad query", "warn"))
-    chips.append(
-        (f"Input confidence {confidence:.0%}", "good" if confidence > 0.75 else "warn")
-    )
+    action = review.get("action", "accept")
+    explanation = review.get("explanation", "")
+    notification = review.get("notification_message", "")
+    
+    chips = [(action.replace("_", " ").title(), "good" if "accept" in action or action == "convert" else "warn")]
+    if review.get("is_news_related") is True:
+        chips.append(("News Relevant", "good"))
+    else:
+        chips.append(("Not News Relevant", "warn"))
     render_chips(chips)
 
-    message = review.get("user_message") or review.get("rejection_reason")
-    if message:
-        st.caption(message)
-
-    options = review.get("suggested_options") or []
-    if options:
-        with st.expander("Suggested query refinements", expanded=False):
-            for option in options:
-                st.markdown(f"- {option}")
+    if explanation:
+        st.markdown(f"**Decision Reason**: {explanation}")
+    if notification:
+        st.info(notification)
 
 
 def article_rows(articles: list[dict]) -> list[dict]:
     rows = []
     for article in articles:
+        raw_neutrality = article.get("neutrality", "")
+        if raw_neutrality == "HIGH_NEUTRALITY":
+            neutrality = "High Neutrality"
+        elif raw_neutrality == "MEDIUM_NEUTRALITY":
+            neutrality = "Medium Neutrality"
+        elif raw_neutrality == "LOW_NEUTRALITY":
+            neutrality = "Low Neutrality"
+        else:
+            neutrality = raw_neutrality
+
         rows.append(
             {
                 "Publisher": article.get("source", ""),
                 "Title": article.get("title", ""),
                 "URL": article.get("url", ""),
                 "Perspective": article.get("bias_category", ""),
-                "Scale": article.get("media_scale", ""),
-                "Type": article.get("media_type", ""),
-                "Outlet Group": article.get("outlet_group", ""),
-                "Wire": article.get("wire_service") or "",
-                "Reliability": clamp_score(article.get("source_reliability_score")),
-                "Objectivity": clamp_score(article.get("objectivity_score")),
+                "Tone Neutrality": neutrality,
                 "Summary": article.get("summary", ""),
             }
         )
@@ -547,23 +543,107 @@ def render_source_table(articles: list[dict]) -> None:
         st.info("No analyzed sources available.")
         return
 
-    import pandas as pd
+    html_lines = []
+    html_lines.append("<style>")
+    html_lines.append("  .source-table-container { max-height: 450px; overflow-y: auto; border: 1px solid rgba(128, 128, 128, 0.2); border-radius: 6px; margin-top: 10px; }")
+    html_lines.append("  .source-table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }")
+    html_lines.append("  .source-table th { position: sticky; top: 0; z-index: 10; background-color: var(--secondary-background-color, #f8f9fa); border-bottom: 2px solid rgba(128, 128, 128, 0.2); padding: 8px 10px; text-align: left; font-weight: 600; }")
+    html_lines.append("  .source-table td { border-bottom: 1px solid rgba(128, 128, 128, 0.15); padding: 8px 10px; vertical-align: top; word-wrap: break-word; word-break: break-word; }")
+    html_lines.append("  .badge { display: inline-block; padding: 2px 6px; font-size: 0.75rem; font-weight: 600; border-radius: 4px; text-align: center; }")
+    html_lines.append("  .badge-left { background-color: rgba(30, 144, 255, 0.15); color: #1e90ff; }")
+    html_lines.append("  .badge-right { background-color: rgba(220, 20, 60, 0.15); color: #dc143c; }")
+    html_lines.append("  .badge-center { background-color: rgba(255, 140, 0, 0.15); color: #ff8c00; }")
+    html_lines.append("  .badge-other { background-color: rgba(128, 128, 128, 0.15); color: #808080; }")
+    html_lines.append("  .neut-high { color: #2e7d32; font-weight: bold; }")
+    html_lines.append("  .neut-med { color: #ef6c00; font-weight: bold; }")
+    html_lines.append("  .neut-low { color: #c62828; font-weight: bold; }")
+    html_lines.append("  .expandable-text { position: relative; }")
+    html_lines.append("  .full-text { display: none; }")
+    html_lines.append("  .toggle-checkbox:checked ~ .full-text { display: inline; }")
+    html_lines.append("  .toggle-checkbox:checked ~ .truncated-text { display: none; }")
+    html_lines.append("  .toggle-label { color: #1e90ff; cursor: pointer; font-size: 0.8rem; font-weight: 600; display: inline-block; margin-top: 2px; }")
+    html_lines.append("  .toggle-label::before { content: 'Show more'; }")
+    html_lines.append("  .toggle-checkbox:checked ~ .toggle-label::before { content: 'Show less'; }")
+    html_lines.append("</style>")
+    html_lines.append("<div class='source-table-container'>")
+    html_lines.append("<table class='source-table'>")
+    html_lines.append("  <thead>")
+    html_lines.append("    <tr>")
+    html_lines.append("      <th style='width: 15%;'>Publisher</th>")
+    html_lines.append("      <th style='width: 35%;'>Title</th>")
+    html_lines.append("      <th style='width: 15%;'>Perspective</th>")
+    html_lines.append("      <th style='width: 15%;'>Neutrality</th>")
+    html_lines.append("      <th style='width: 20%;'>Summary</th>")
+    html_lines.append("    </tr>")
+    html_lines.append("  </thead>")
+    html_lines.append("  <tbody>")
 
-    df = pd.DataFrame(article_rows(articles))
-    st.dataframe(
-        df,
-        column_config={
-            "URL": st.column_config.LinkColumn("URL"),
-            "Reliability": st.column_config.ProgressColumn(
-                "Reliability", min_value=0.0, max_value=1.0, format="%.2f"
-            ),
-            "Objectivity": st.column_config.ProgressColumn(
-                "Objectivity", min_value=0.0, max_value=1.0, format="%.2f"
-            ),
-        },
-        use_container_width=True,
-        hide_index=True,
-    )
+    for idx, article in enumerate(articles):
+        publisher = article.get("source", "")
+        title = article.get("title", "")
+        url = article.get("url", "")
+        perspective = article.get("bias_category", "")
+        
+        raw_neutrality = str(article.get("neutrality", "")).strip(" ,\"'").upper().replace(" ", "_")
+        if raw_neutrality == "HIGH_NEUTRALITY":
+            neutrality = "High Neutrality"
+            neut_class = "neut-high"
+        elif raw_neutrality == "MEDIUM_NEUTRALITY":
+            neutrality = "Medium Neutrality"
+            neut_class = "neut-med"
+        elif raw_neutrality == "LOW_NEUTRALITY":
+            neutrality = "Low Neutrality"
+            neut_class = "neut-low"
+        else:
+            neutrality = article.get("neutrality", "")
+            neut_class = ""
+
+        if perspective == "Left":
+            badge_class = "badge-left"
+        elif perspective == "Right":
+            badge_class = "badge-right"
+        elif perspective == "Center":
+            badge_class = "badge-center"
+        else:
+            badge_class = "badge-other"
+
+        summary = article.get("summary", "")
+        
+        if len(summary) > 120:
+            truncated = summary[:120]
+            last_space = truncated.rfind(" ")
+            if last_space > 80:
+                truncated = truncated[:last_space]
+            remaining = summary[len(truncated):]
+            
+            summary_html = (
+                f"<div class='expandable-text'>"
+                f"<input type='checkbox' id='toggle-{idx}' class='toggle-checkbox' style='display: none;'>"
+                f"<span class='truncated-text'>{truncated}...</span>"
+                f"<span class='full-text'>{truncated}{remaining}</span>"
+                f"<label for='toggle-{idx}' class='toggle-label'></label>"
+                f"</div>"
+            )
+        else:
+            summary_html = summary
+
+        title_html = f"<a href='{url}' target='_blank' style='text-decoration: none; color: inherit; font-weight: 500;'>{title}</a>" if url else title
+
+        html_lines.append(
+            f"<tr>"
+            f"<td>{publisher}</td>"
+            f"<td>{title_html}</td>"
+            f"<td><span class='badge {badge_class}'>{perspective}</span></td>"
+            f"<td><span class='{neut_class}'>{neutrality}</span></td>"
+            f"<td>{summary_html}</td>"
+            f"</tr>"
+        )
+
+    html_lines.append("  </tbody>")
+    html_lines.append("</table>")
+    html_lines.append("</div>")
+
+    st.markdown("".join(html_lines), unsafe_allow_html=True)
 
 
 def render_landscape(articles_data: dict) -> None:
@@ -577,15 +657,9 @@ def render_landscape(articles_data: dict) -> None:
     rows = article_rows(articles)
     df = pd.DataFrame(rows)
     total = len(rows)
-    avg_rel = sum(row["Reliability"] for row in rows) / total
-    avg_obj = sum(row["Objectivity"] for row in rows) / total
     source_balance = articles_data.get("source_balance") or {}
 
-    cols = st.columns(4)
-    cols[0].metric("Sources", total)
-    cols[1].metric("Avg reliability", f"{avg_rel:.0%}")
-    cols[2].metric("Avg objectivity", f"{avg_obj:.0%}")
-    cols[3].metric("Search status", articles_data.get("search_status", "verified"))
+    st.metric("Sources", total)
 
     if articles_data.get("verification_summary"):
         st.info(articles_data["verification_summary"])
@@ -594,28 +668,35 @@ def render_landscape(articles_data: dict) -> None:
         with st.expander("Candidate pool balance", expanded=False):
             st.json(source_balance)
 
-    chart_col_1, chart_col_2 = st.columns(2)
-    with chart_col_1:
-        st.markdown("#### Source mix")
-        counts = df["Perspective"].value_counts().reset_index()
-        counts.columns = ["Perspective", "Count"]
-        st.bar_chart(counts, x="Perspective", y="Count", color="Perspective")
-    with chart_col_2:
-        st.markdown("#### Reliability vs objectivity")
-        st.scatter_chart(
-            df,
-            x="Reliability",
-            y="Objectivity",
-            color="Perspective",
-            size="Reliability",
+    st.markdown("#### Source mix")
+    counts = df["Perspective"].value_counts().reset_index()
+    counts.columns = ["Perspective", "Count"]
+
+    import altair as alt
+
+    chart = (
+        alt.Chart(counts)
+        .mark_arc()
+        .encode(
+            theta=alt.Theta(field="Count", type="quantitative"),
+            color=alt.Color(
+                field="Perspective",
+                type="nominal",
+                scale=alt.Scale(
+                    domain=["Left", "Right", "Center", "Other/Non-Political"],
+                    range=["blue", "red", "orange", "gray"],
+                ),
+            ),
+            tooltip=["Perspective", "Count"],
         )
+    )
+    st.altair_chart(chart, use_container_width=True)
 
 
 def render_public_summary(results: dict) -> None:
     public_report = results.get("public_report") or {}
     audit_warnings = results.get("audit_warnings") or []
     articles_data = results.get("articles") or {}
-    review = results.get("review_result") or {}
     recruitment = results.get("recruitment") or {}
 
     if audit_warnings:
@@ -655,8 +736,6 @@ def render_public_summary(results: dict) -> None:
         chips.append(
             (f"Complexity: {complexity}", "good" if complexity == "low" else "warn")
         )
-    if review.get("suggested_query_formulation"):
-        chips.append((f"Query: {review.get('suggested_query_formulation')}", "good"))
     render_chips(chips)
 
     if public_report.get("narrative_summary"):
@@ -1228,6 +1307,19 @@ def render_qa_tab(results: dict) -> None:
                     f"User Question: {chat_prompt}"
                 )
 
+                import datetime
+                now = datetime.datetime.now()
+                now_utc = datetime.datetime.now(datetime.timezone.utc)
+                local_date = now.strftime('%B %d, %Y')
+                utc_date = now_utc.strftime('%B %d, %Y')
+                current_date_prefix = (
+                    f"The current date is {local_date} (local system time) / {utc_date} (UTC). "
+                    f"Note: news articles may be dated 1 day ahead or behind due to international timezone differences; "
+                    f"treat such minor discrepancies as valid and current, not as future events or hallucinations.\n\n"
+                )
+                if hasattr(qa_agent, "instruction") and qa_agent.instruction and not qa_agent.instruction.startswith("The current date is"):
+                    qa_agent.instruction = current_date_prefix + qa_agent.instruction
+
                 runner = Runner(
                     agent=qa_agent,
                     app_name="news_app",
@@ -1383,131 +1475,14 @@ if submit:
     if not topic.strip():
         st.warning("Enter a topic, headline, URL, or article excerpt.")
     else:
-        with st.spinner("Checking input suitability..."):
-            import asyncio
-
-            from agents.coordinator import NewsAnalysisCoordinator
-
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                coordinator = NewsAnalysisCoordinator()
-                review_result = loop.run_until_complete(
-                    coordinator.run_input_check(topic.strip(), selected_model)
-                )
-            except Exception as e:
-                st.error(f"Input Check Agent error: {e}")
-                review_result = None
-            finally:
-                loop.close()
-
-        if review_result:
-            is_news = review_result.get("is_news_relevant", True)
-            needs_confirm = review_result.get("needs_user_confirmation", False)
-            auto_mod = review_result.get("auto_modified", False)
-            suggested_options = review_result.get("suggested_options") or []
-            issue_type = review_result.get("input_issue_type", "clear_news_query")
-
-            if (
-                issue_type != "clear_news_query"
-                or not is_news
-                or needs_confirm
-                or auto_mod
-                or suggested_options
-            ):
-                st.session_state["awaiting_confirmation"] = True
-                st.session_state["review_result"] = review_result
-                st.session_state["original_topic"] = topic.strip()
-                st.session_state["confirmed_model"] = selected_model
-                st.rerun()
-            else:
-                st.session_state["awaiting_confirmation"] = False
-                start_workflow(
-                    topic.strip(),
-                    selected_model,
-                    enable_editor,
-                    bypass_input_check=True,
-                )
-                st.rerun()
-
-# Render interactive validation confirmation box
-if st.session_state.get("awaiting_confirmation"):
-    review = st.session_state["review_result"]
-    original_topic = st.session_state["original_topic"]
-    confirmed_model = st.session_state["confirmed_model"]
-
-    with st.container(border=True):
-        issue_type = review.get("input_issue_type", "unsuitable")
-        is_clear_refinement = (
-            issue_type == "clear_news_query"
-            and review.get("is_safe", True)
-            and review.get("is_news_relevant", True)
-            and not review.get("needs_user_confirmation", False)
+        st.session_state["awaiting_confirmation"] = False
+        start_workflow(
+            topic.strip(),
+            selected_model,
+            enable_editor,
+            bypass_input_check=False,
         )
-        if is_clear_refinement:
-            st.info(
-                "**Query refinement available**: The Input Check Agent found a clearer formulation."
-            )
-        else:
-            st.warning(
-                "⚠️ **Input validation check required**: The Input Check Agent flagged this query."
-            )
-
-        user_msg = (
-            review.get("user_message")
-            or review.get("rejection_reason")
-            or "This query needs refinement."
-        )
-        st.markdown(f"**Issue Detected**: {issue_type.replace('_', ' ').title()}")
-        st.info(f"**Message**: {user_msg}")
-
-        suggested_q = review.get("suggested_query_formulation", original_topic)
-        if suggested_q != original_topic:
-            st.markdown(f"**Suggested Formulation**: `{suggested_q}`")
-
-        options = review.get("suggested_options") or []
-
-        btn_cols = st.columns([1, 1, 1])
-
-        if suggested_q != original_topic:
-            refined_button_label = (
-                "Use refined query" if is_clear_refinement else "Use suggested query"
-            )
-            if btn_cols[0].button(
-                refined_button_label, type="primary", use_container_width=True
-            ):
-                st.session_state["awaiting_confirmation"] = False
-                start_workflow(
-                    suggested_q, confirmed_model, enable_editor, bypass_input_check=True
-                )
-                st.rerun()
-
-        if btn_cols[1].button(
-            "Continue with original", type="secondary", use_container_width=True
-        ):
-            st.session_state["awaiting_confirmation"] = False
-            start_workflow(
-                original_topic, confirmed_model, enable_editor, bypass_input_check=True
-            )
-            st.rerun()
-
-        if btn_cols[2].button("Cancel", type="secondary", use_container_width=True):
-            st.session_state["awaiting_confirmation"] = False
-            st.rerun()
-
-        if options:
-            st.markdown("### Suggested refinement paths:")
-            for idx, option in enumerate(options, 1):
-                if st.button(
-                    f"Option {idx}: {option}",
-                    key=f"opt_btn_{idx}",
-                    use_container_width=True,
-                ):
-                    st.session_state["awaiting_confirmation"] = False
-                    start_workflow(
-                        option, confirmed_model, enable_editor, bypass_input_check=True
-                    )
-                    st.rerun()
+        st.rerun()
 
 
 # --- Display Content Area ---
@@ -1520,20 +1495,17 @@ if "shared_state" not in st.session_state:
 state = st.session_state["shared_state"]
 status = state["status"]
 results = state["results"]
-review = results.get("review_result") or {}
 step_statuses = state.get("step_statuses") or {}
 
 # Check for immediate exits (Input Rejection or early search failures)
 if results.get("reviewed") is False:
     st.error("Input check rejected this request.")
+    review = results.get("review_result") or {}
     render_input_review(review)
-    if review.get("suggested_query_formulation"):
-        st.info(f"Suggested query: {review['suggested_query_formulation']}")
     st.stop()
 
 if results.get("search_failed"):
     st.warning("Search could not establish enough credible support for this topic.")
-    render_input_review(review)
     search_result = results.get("search_result") or results.get("articles") or {}
     st.markdown(f"**Query used:** {results.get('optimized_query', '')}")
     st.markdown(
@@ -1647,6 +1619,15 @@ with st.sidebar:
 )
 
 with tab_briefing:
+    review_res = results.get("review_result") or {}
+    if review_res.get("action") == "accept_with_notification":
+        st.warning(f"⚠️ **Input validation note**: {review_res.get('notification_message')}")
+
+    search_res = results.get("articles") or {}
+    search_status_val = str(search_res.get("search_status") or "").lower()
+    if search_status_val == "moderate":
+        st.warning("⚠️ **Sparse News Pool**: Very few unique search sources (3 to 5 unique articles) were found for this topic. Downstream analysis may be thin or limited.")
+
     public_report = results.get("public_report") or {}
     if not public_report:
         st.markdown(
@@ -1666,7 +1647,7 @@ with tab_sources:
         st.markdown(
             '<div class="loading-card">'
             "<h3>🔍 Source Crawling In Progress</h3>"
-            "<p>The Search Agent is currently querying credible global news databases and checking source reliability...</p>"
+            "<p>The Search Agent is currently querying credible global news databases and selecting reliable articles...</p>"
             "</div>",
             unsafe_allow_html=True,
         )

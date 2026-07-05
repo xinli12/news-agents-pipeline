@@ -155,22 +155,21 @@ def test_perspective_schema_supports_axis_and_inference_metadata() -> None:
     ]
 
 
-def test_input_review_schema_supports_query_repair_options() -> None:
-    from agents.schemas import TopicReviewResult
+def test_input_validation_schema_supports_new_actions() -> None:
+    from agents.schemas import InputValidationResult
 
-    review = TopicReviewResult(
-        is_safe=True,
-        is_news_relevant=True,
-        suggested_query_formulation="Keir Starmer recent news",
-        input_issue_type="fragment",
-        suggested_options=["Recent developments", "Full political timeline"],
-        auto_modified=True,
-        needs_user_confirmation=True,
-        confidence=0.72,
+    result = InputValidationResult(
+        action="accept_with_notification",
+        is_news_related=True,
+        explanation="The topic is likely news-related but very broad.",
+        notification_message="Your query is broad. Consider specifying a region or date.",
+        converted_query="Keir Starmer recent news",
     )
 
-    assert review.auto_modified is True
-    assert review.suggested_options[0] == "Recent developments"
+    assert result.action == "accept_with_notification"
+    assert result.is_news_related is True
+    assert result.notification_message == "Your query is broad. Consider specifying a region or date."
+    assert result.converted_query == "Keir Starmer recent news"
 
 
 def test_article_list_schema_supports_search_verification_metadata() -> None:
@@ -179,13 +178,13 @@ def test_article_list_schema_supports_search_verification_metadata() -> None:
     article_list = ArticleList(
         topic="Example topic",
         query_used="Example topic latest news",
-        search_status="insufficient_corroboration",
+        search_status="Low",
         verification_summary="Only one distinct source was found.",
         warnings=["Do not continue without more sources."],
         articles=[],
     )
 
-    assert article_list.search_status == "insufficient_corroboration"
+    assert article_list.search_status == "Low"
     assert article_list.warnings == ["Do not continue without more sources."]
 
 
@@ -418,3 +417,69 @@ def test_merge_disputed_claims_deduplicates_dispute_question_fallbacks() -> None
         "Whether emergency funding reached local agencies."
     )
     assert merged[1]["side_a_assertion"] == "Officials say the deadline remains unchanged."
+
+
+def test_classify_topic_characteristics_and_selection_logic() -> None:
+    from unittest.mock import patch, MagicMock
+    from agents.search_agent import classify_topic_characteristics
+
+    # 1. Test classify_topic_characteristics
+    with patch("google.genai.Client") as mock_client_cls:
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.text = '{"is_viewpoint_oriented": true, "complexity": "High"}'
+        mock_client.models.generate_content.return_value = mock_response
+
+        res = classify_topic_characteristics("Some topic", [{"title": "Test"}])
+        assert res["is_viewpoint_oriented"] is True
+        assert res["complexity"] == "High"
+
+    # 2. Test get_live_news_articles selection logic branches
+    from agents.search_agent import get_live_news_articles
+
+    # Mock ddgs, classify_topic_characteristics, classify_articles_bias_batch, scrape_articles_parallel
+    with patch("agents.search_agent.DDGS") as mock_ddgs, \
+         patch("agents.search_agent.classify_topic_characteristics") as mock_classify, \
+         patch("agents.search_agent.classify_articles_bias_batch") as mock_bias_batch, \
+         patch("agents.scraper.scrape_articles_parallel") as mock_scrape:
+
+        # Setup mock search results
+        mock_news = MagicMock()
+        mock_ddgs.return_value.__enter__.return_value = mock_news
+
+        dummy_results = [
+            {"title": "Article Left 1", "url": "http://left1", "source": "Left Outlet 1", "body": "body 1"},
+            {"title": "Article Right 1", "url": "http://right1", "source": "Right Outlet 1", "body": "body 2"},
+            {"title": "Article Center 1", "url": "http://center1", "source": "Center Outlet 1", "body": "body 3"},
+            {"title": "Article Wire Center 2", "url": "http://center2", "source": "Reuters", "body": "body 4"},
+            {"title": "Article Other 1", "url": "http://other1", "source": "Other Outlet 1", "body": "body 5"},
+        ]
+        mock_news.news.return_value = dummy_results
+        mock_scrape.return_value = {}
+
+        # Case A: Factual-oriented (is_viewpoint_oriented = False, complexity = Simple)
+        mock_classify.return_value = {"is_viewpoint_oriented": False, "complexity": "Simple"}
+        mock_bias_batch.return_value = {
+            "http://left1": "LEFT", "http://right1": "RIGHT", "http://center1": "CENTER",
+            "http://center2": "CENTER", "http://other1": "OTHER/NON-POLITICAL"
+        }
+
+        res_factual = get_live_news_articles("Factual Topic")
+        assert "TOPIC_TYPE: factual-oriented" in res_factual
+        assert "TOPIC_COMPLEXITY: Simple" in res_factual
+        # The factual selection should prioritize wire service (Reuters / http://center2) and keep others in search order.
+        # First article should be the wire service: Article Wire Center 2
+        assert "Article #1\nTitle: Article Wire Center 2" in res_factual
+
+        # Case B: Viewpoint-oriented (is_viewpoint_oriented = True, complexity = High)
+        mock_classify.return_value = {"is_viewpoint_oriented": True, "complexity": "High"}
+        res_viewpoint = get_live_news_articles("Viewpoint Topic")
+        assert "TOPIC_TYPE: viewpoint-oriented" in res_viewpoint
+        assert "TOPIC_COMPLEXITY: High" in res_viewpoint
+        # The viewpoint selection should use round-robin: LEFT, RIGHT, CENTER, OTHER/NON-POLITICAL
+        # Order should be Left 1, Right 1, Center 1, Other 1, then the rest (Reuters)
+        assert "Article #1\nTitle: Article Left 1" in res_viewpoint
+        assert "Article #2\nTitle: Article Right 1" in res_viewpoint
+        assert "Article #3\nTitle: Article Center 1" in res_viewpoint
+

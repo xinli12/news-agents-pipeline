@@ -111,10 +111,7 @@ async def run_cli(topic: str):
                 sources_table.add_column("Title & URL", style="cyan")
                 sources_table.add_column("Source", style="green")
                 sources_table.add_column("Bias Rating", justify="center")
-                sources_table.add_column("Scale", justify="center")
-                sources_table.add_column("Type", justify="center")
-                sources_table.add_column("Source Reliability", justify="center")
-                sources_table.add_column("Snippet Objectivity", justify="center")
+                sources_table.add_column("Tone Neutrality", justify="center")
 
                 for idx, art in enumerate(payload.get("articles", []), 1):
                     bias = art.get("bias_category", "Unknown")
@@ -129,22 +126,26 @@ async def run_cli(topic: str):
                     )
 
                     title_url = f"[bold]{art.get('title', '')}[/bold]\n[dim]{art.get('url', '')}[/dim]"
-                    rel_meter = make_score_meter(
-                        art.get("source_reliability_score", 0.0), width=6
-                    )
-                    obj_meter = make_score_meter(
-                        art.get("objectivity_score", 0.0), width=6
-                    )
+                    raw_neutrality = art.get("neutrality", "Unknown")
+                    if raw_neutrality == "HIGH_NEUTRALITY":
+                        neutrality = "High Neutrality"
+                        neut_color = "green"
+                    elif raw_neutrality == "MEDIUM_NEUTRALITY":
+                        neutrality = "Medium Neutrality"
+                        neut_color = "orange"
+                    elif raw_neutrality == "LOW_NEUTRALITY":
+                        neutrality = "Low Neutrality"
+                        neut_color = "red"
+                    else:
+                        neutrality = raw_neutrality
+                        neut_color = "white"
 
                     sources_table.add_row(
                         str(idx),
                         title_url,
                         art.get("source", ""),
                         f"[bold {bias_color}]{bias}[/bold {bias_color}]",
-                        art.get("media_scale", ""),
-                        art.get("media_type", ""),
-                        rel_meter,
-                        obj_meter,
+                        f"[bold {neut_color}]{neutrality}[/bold {neut_color}]",
                     )
                 console.print(sources_table)
                 console.print()
@@ -362,13 +363,39 @@ async def run_cli(topic: str):
             console.print("\n[bold red]✖ Input Review Rejected![/bold red]")
             console.print(
                 Panel(
-                    f"[bold]Rejection Reason:[/bold] {review.get('rejection_reason', 'Not news-relevant or safe.')}\n\n"
-                    f"[bold]Suggested Query:[/bold] {review.get('suggested_query_formulation', '')}",
+                    f"[bold]Action:[/bold] {review.get('action', 'reject_with_confirmation')}\n"
+                    f"[bold]Reason:[/bold] {review.get('explanation', 'Not news-relevant or safe.')}\n\n"
+                    f"{review.get('notification_message', '')}",
                     title="Input Moderation Audit Result",
                     border_style="red",
                 )
             )
             return
+
+        review_res = results.get("review_result", {})
+        if review_res.get("action") == "accept_with_notification":
+            console.print(
+                Panel(
+                    f"[bold yellow]⚠️ Input Validation Note[/bold yellow]\n\n"
+                    f"{review_res.get('notification_message')}",
+                    title="Input Validation Warning",
+                    border_style="yellow",
+                )
+            )
+
+        # Check for sparse pool warning
+        search_res = results.get("articles") or {}
+        search_status_val = str(search_res.get("search_status") or "").lower()
+        if search_status_val == "moderate":
+            console.print(
+                Panel(
+                    f"[bold yellow]⚠️ Sparse News Pool[/bold yellow]\n\n"
+                    f"Very few unique search sources (3 to 5 unique articles) were found for this query. "
+                    f"Downstream analysis may be thin or limited.",
+                    title="Search Notice",
+                    border_style="yellow",
+                )
+            )
 
         if results.get("search_failed"):
             search_result = results.get("search_result", {})
@@ -583,10 +610,7 @@ def display_results(results: dict):
     sources_table.add_column("Title & URL", style="cyan")
     sources_table.add_column("Source", style="green")
     sources_table.add_column("Bias Rating", justify="center")
-    sources_table.add_column("Scale", justify="center")
-    sources_table.add_column("Type", justify="center")
-    sources_table.add_column("Source Reliability", justify="center")
-    sources_table.add_column("Snippet Objectivity", justify="center")
+    sources_table.add_column("Tone Neutrality", justify="center")
 
     for idx, art in enumerate(articles_data.get("articles", []), 1):
         bias = art.get("bias_category", "Unknown")
@@ -603,18 +627,26 @@ def display_results(results: dict):
         title_url = (
             f"[bold]{art.get('title', '')}[/bold]\n[dim]{art.get('url', '')}[/dim]"
         )
-        rel_meter = make_score_meter(art.get("source_reliability_score", 0.0), width=6)
-        obj_meter = make_score_meter(art.get("objectivity_score", 0.0), width=6)
+        raw_neutrality = art.get("neutrality", "Unknown")
+        if raw_neutrality == "HIGH_NEUTRALITY":
+            neutrality = "High Neutrality"
+            neut_color = "green"
+        elif raw_neutrality == "MEDIUM_NEUTRALITY":
+            neutrality = "Medium Neutrality"
+            neut_color = "orange"
+        elif raw_neutrality == "LOW_NEUTRALITY":
+            neutrality = "Low Neutrality"
+            neut_color = "red"
+        else:
+            neutrality = raw_neutrality
+            neut_color = "white"
 
         sources_table.add_row(
             str(idx),
             title_url,
             art.get("source", ""),
             f"[bold {bias_color}]{bias}[/bold {bias_color}]",
-            art.get("media_scale", ""),
-            art.get("media_type", ""),
-            rel_meter,
-            obj_meter,
+            f"[bold {neut_color}]{neutrality}[/bold {neut_color}]",
         )
 
     console.print(sources_table)

@@ -2,38 +2,47 @@ import os
 
 from google.adk.agents import Agent
 
-from agents.schemas import TopicReviewResult
+from agents.schemas import InputValidationResult
+from agents.scraper import scrape_article_text
 
 
-def get_review_agent(model_name: str | None = None) -> Agent:
+def get_input_check_agent(model_name: str | None = None) -> Agent:
     if model_name is None:
         model_name = os.environ.get("CURRENT_MODEL", "gemini-3.1-flash-lite")
     return Agent(
         name="review_agent",
         model=model_name,
         instruction=(
-            "You are the Input Check Agent. Your job is to pre-audit the user's input topic before it is "
-            "sent to the search engine, determine its safety/news-relevance, and formulate an optimized query.\n\n"
-            "Populate every field in TopicReviewResult. Use input_issue_type as one of: "
-            "'clear_news_query', 'non_news', 'obscure_or_unverified', 'too_broad', 'fragment', "
-            "'loaded_language', 'url_or_full_text', or 'unsafe'. Use user_message to briefly explain "
-            "what happened in plain language for the UI.\n\n"
-            "Handling 6 Specific Input Cases:\n"
-            "1. Non-News Queries (e.g., 'What is Fourier transform?'): Set is_news_relevant to false and "
-            "provide a user-friendly suggestion of news topics they might ask instead in the rejection_reason. "
-            "Add 2-3 suggested_options that turn the idea into a news-oriented query if possible.\n"
-            "2. Un-networked News/Memes (e.g., 'Larry the Cat'): Do not reject. Set is_news_relevant to true, "
-            "set input_issue_type to 'obscure_or_unverified', and formulate a query to search for and verify the topic.\n"
-            "3. Broad Topics (e.g., 'Russia-Ukraine War'): Provide options to narrow it down in the 'rejection_reason' "
-            "and suggested_options (e.g. 'Recent developments', 'Full timeline and structural roots'). "
-            "If continuing automatically, default to recent developments and set needs_user_confirmation to true.\n"
-            "4. Fragmented/Short Queries (e.g., 'Starmer'): Auto-complete to a search-friendly query "
-            "(e.g. 'Keir Starmer recent news and political updates') and set auto_modified to true.\n"
-            "5. Strongly Biased/Loaded Inputs (e.g., 'Why is Starmer ruining the UK?'): Strip the loaded/biased language, "
-            "neutralize it, reformulate it into an objective, search-friendly query, and set auto_modified to true.\n"
-            "6. Raw URLs or Article Copy-Pastes: Extract the core event and keywords to create a concise, keyword-based search query.\n\n"
-            "Ensure the suggested_query_formulation is always clear, non-partisan, and optimized for search engine keywords."
+            "You are the Input Check Agent. Your job is to pre-audit the user's input before it is "
+            "processed by the news search engine, determine its safety/news-relevance, and decide the next action.\n\n"
+            "You must populate every field in InputValidationResult. "
+            "The field 'action' must be exactly one of: 'accept', 'accept_with_notification', 'reject_with_confirmation', 'convert'.\n\n"
+            "Guidelines for Actions:\n"
+            "1. Accept: Use when the input topic is clearly news-related, specific, and safe (e.g., 'UK General Election results 2024', "
+            "'Federal Reserve rate cut July 2026'). Set action to 'accept', is_news_related to true, and explain the decision.\n"
+            "2. Accept_with_notification: Use when the input is likely news-related but is too vague, broad, or lacks sufficient context "
+            "(e.g., 'taxes', 'climate change', 'Keir Starmer'). Set action to 'accept_with_notification', is_news_related to true, "
+            "and provide a helpful notification_message advising the user that a more specific query will yield better results "
+            "(e.g. 'Your query is very broad; specifying a recent event or region will help narrow down the search').\n"
+            "3. Reject_with_confirmation: Use when the input is not news-related (e.g., homework, programming questions, math, "
+            "definitions like 'What is a Fourier transform?', or general chat). Set action to 'reject_with_confirmation', "
+            "is_news_related to false, and populate notification_message asking the user if they want to revise their query to add news context.\n"
+            "4. Convert: Use when the input contains a URL or a full article copy-paste.\n"
+            "   - If the input is a URL: You MUST call your 'scrape_article_text' tool first to read the article contents.\n"
+            "   - Determine if the URL or article copy-paste is news-related.\n"
+            "   - If it is news-related: set action to 'convert', is_news_related to true, extract the core news event or topic "
+            "from the scraped article text, and formulate it as a clean, concise, keyword-based search query in 'converted_query' "
+            "that is optimized for search, summarizes the main content, and avoids metadata or URL fragments. "
+            "Examples of clean, concise, search-optimized queries:\n"
+            "     * 'UK inflation rises unexpectedly June 2026'\n"
+            "     * 'OpenAI releases new AI safety framework'\n"
+            "     * 'Israel and Hamas ceasefire negotiations'\n"
+            "     Avoid queries like: 'BBC news article c4gy700j0eko'. Explain the decision in 'explanation'.\n"
+            "   - If it is NOT news-related: set action to 'reject_with_confirmation', is_news_related to false, set converted_query to null, "
+            "and use notification_message to explain the rejection and ask if they would like to revise it.\n\n"
+            "Always output valid JSON complying with the InputValidationResult schema."
         ),
-        output_schema=TopicReviewResult,
+        tools=[scrape_article_text],
+        output_schema=InputValidationResult,
         output_key="review_result",
     )

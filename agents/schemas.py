@@ -2,17 +2,12 @@ import pydantic
 
 
 # --- Input Reviewer Model ---
-class TopicReviewResult(pydantic.BaseModel):
-    is_safe: bool
-    is_news_relevant: bool
-    suggested_query_formulation: str
-    rejection_reason: str | None = None
-    input_issue_type: str = "clear_news_query"
-    user_message: str = ""
-    suggested_options: list[str] = pydantic.Field(default_factory=list)
-    auto_modified: bool = False
-    needs_user_confirmation: bool = False
-    confidence: float = 1.0
+class InputValidationResult(pydantic.BaseModel):
+    action: str  # Must be one of: "accept", "accept_with_notification", "reject_with_confirmation", "convert"
+    is_news_related: bool
+    explanation: str
+    notification_message: str | None = None
+    converted_query: str | None = None
 
 
 # --- Search & Categorizer Models ---
@@ -21,15 +16,10 @@ class Article(pydantic.BaseModel):
     url: str
     source: str
     published_date: str
-    bias_category: str  # "Left", "Center", "Right", "Independent", "Unknown"
-    media_scale: str  # "Local", "National", "International"
-    media_type: str  # "Mainstream", "Independent"
+    bias_category: str  # "Left", "Center", "Right", "Other/Non-Political"
     summary: str
     full_content_snippet: str
-    source_reliability_score: float  # 0.0 to 1.0
-    objectivity_score: float  # 0.0 to 1.0
-    outlet_group: str = ""
-    wire_service: str | None = None
+    neutrality: str  # "HIGH_NEUTRALITY", "MEDIUM_NEUTRALITY", "LOW_NEUTRALITY"
     duplicate_cluster: str = ""
     selection_rationale: str = ""
 

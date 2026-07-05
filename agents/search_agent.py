@@ -107,12 +107,12 @@ def classify_articles_bias_batch(articles: list[dict]) -> dict[str, str]:
 
         prompt = (
             "Analyze the following list of news articles (including their title, source, and search snippet) "
-            "and classify the political/ideological bias of each article as 'LEFT', 'RIGHT', 'CENTER', or 'OTHER'.\n"
+            "and classify the political/ideological bias of each article as 'LEFT', 'RIGHT', 'CENTER', or 'OTHER/NON-POLITICAL'.\n"
             "Classification guidelines:\n"
-            "- 'LEFT': Left-leaning framing, focusing heavily on progressive arguments, social justice, government regulation/safety nets, or critiques of corporate power.\n"
-            "- 'RIGHT': Right-leaning framing, focusing heavily on conservative arguments, market-driven solutions, tax cuts, individual liberties, critiques of government regulation/spending, or national security.\n"
-            "- 'CENTER': Factual, objective reporting with balanced arguments, descriptive tone, and no obvious ideological bias (e.g. wire reports like Reuters/AP, straightforward informative coverage).\n"
-            "- 'OTHER': Use for articles that are non-political (e.g. sports, technology, science, lifestyle, recipes, entertainment) or cannot be classified.\n\n"
+            "- 'LEFT': The article primarily frames issues from a progressive perspective, emphasizing themes such as social justice, government intervention, labor rights, environmental protection, or critiques of corporate power.\n"
+            "- 'RIGHT': The article primarily frames issues from a conservative perspective, emphasizing themes such as free markets, limited government, or traditional values.\n"
+            "- 'CENTER': The article reports facts in a balanced, descriptive, and neutral manner without clearly advocating a particular political perspective.\n"
+            "- 'OTHER/NON-POLITICAL': The article is non-political (e.g., science, technology, sports, or entertainment), has no obvious political perspective, or presents a viewpoint that does not fit the other categories.\n\n"
             "Respond strictly in JSON format as a flat dictionary mapping each article's 'id' (as a string) to its bias category.\n"
             "Do not include any formatting or explanation outside the JSON.\n\n"
             f"Articles:\n{json.dumps(articles_to_classify, indent=2)}"
@@ -150,6 +150,68 @@ def classify_articles_bias_batch(articles: list[dict]) -> dict[str, str]:
         return {}
 
 
+def classify_topic_characteristics(topic: str, articles: list[dict]) -> dict:
+    """Determine if a topic/article pool is political/viewpoint-oriented vs non-political/factual,
+    and classify its complexity (Simple, Moderate, High).
+    """
+    if not articles:
+        return {"is_viewpoint_oriented": False, "complexity": "Simple"}
+    try:
+        import os
+
+        from google import genai
+
+        model_name = os.environ.get("CURRENT_MODEL", "gemini-3.1-flash-lite")
+        client = genai.Client()
+
+        # Prepare a sample of the articles for analyzing the topic characteristics
+        sample_articles = []
+        for idx, art in enumerate(articles[:10]):
+            sample_articles.append(
+                {
+                    "title": art.get("title", "N/A"),
+                    "source": art.get("source", "N/A"),
+                    "snippet": art.get("body", "N/A"),
+                }
+            )
+
+        prompt = (
+            f"Analyze the search topic '{topic}' and the following sample of search results to determine:\n"
+            "1. Topic type classification:\n"
+            "   - 'viewpoint-oriented': If the topic/articles cover political, public policy, legal, economic, or other topics with multiple conflicting or diverse viewpoints/interpretations.\n"
+            "   - 'factual-oriented': If the topic is non-political or primarily factual (e.g., sports, science, weather, technology, or a single straightforward news event with little disagreement or analysis).\n"
+            "2. Complexity/diversity level:\n"
+            "   - 'Simple': The search results primarily describe a single event with little disagreement or analysis.\n"
+            "   - 'Moderate': The search results cover multiple aspects of the topic, such as different stakeholders, analyses, or developments.\n"
+            "   - 'High': The search results reveal a complex, evolving, or controversial topic with multiple independent viewpoints.\n\n"
+            "Respond strictly in JSON format as a dictionary with keys 'is_viewpoint_oriented' (boolean) and 'complexity' (string, either 'Simple', 'Moderate', or 'High').\n"
+            "Do not include any formatting or explanation outside the JSON.\n\n"
+            f"Sample articles:\n{json.dumps(sample_articles, indent=2)}"
+        )
+
+        response = client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+            config={
+                "response_mime_type": "application/json",
+            },
+        )
+        res = json.loads(response.text)
+        is_viewpoint = bool(res.get("is_viewpoint_oriented", False))
+        complexity = str(res.get("complexity", "Moderate"))
+        if complexity not in ["Simple", "Moderate", "High"]:
+            complexity = "Moderate"
+        return {"is_viewpoint_oriented": is_viewpoint, "complexity": complexity}
+    except Exception as e:
+        import sys
+
+        print(
+            f"Warning: Topic classification failed: {e!s}. Falling back to default values.",
+            file=sys.stderr,
+        )
+        return {"is_viewpoint_oriented": False, "complexity": "Moderate"}
+
+
 def get_live_news_articles(topic: str) -> str:
     """Searches the web for live news articles on a given topic and scrapes full texts in parallel.
 
@@ -158,9 +220,9 @@ def get_live_news_articles(topic: str) -> str:
     """
     try:
         with DDGS() as ddgs:
-            # Fetch up to 40 articles to ensure we have a diverse pool to choose from
+            # Fetch up to 35 articles to ensure we have a diverse pool to choose from
             try:
-                results = list(ddgs.news(topic, max_results=40))
+                results = list(ddgs.news(topic, max_results=35))
             except Exception as news_err:
                 # Fallback to general text search if news search is rate-limited/blocked
                 import sys
@@ -170,7 +232,7 @@ def get_live_news_articles(topic: str) -> str:
                     file=sys.stderr,
                 )
                 try:
-                    text_results = list(ddgs.text(topic, max_results=40))
+                    text_results = list(ddgs.text(topic, max_results=35))
                     results = []
                     for r in text_results:
                         url = r.get("href", "")
@@ -207,12 +269,25 @@ def get_live_news_articles(topic: str) -> str:
 
             if len(results) < 3:
                 return (
-                    "SEARCH_STATUS: insufficient_corroboration\n"
+                    "SEARCH_STATUS: Low\n"
                     f"QUERY: {topic}\n"
                     f"RAW_CANDIDATES: {raw_count}\n"
                     f"UNIQUE_CANDIDATES: {len(results)}\n"
                     "The search produced too few distinct news sources to support a multi-source analysis."
                 )
+
+            # Classify topic type and complexity
+            topic_info = classify_topic_characteristics(topic, results)
+            is_viewpoint = topic_info["is_viewpoint_oriented"]
+            complexity = topic_info["complexity"]
+
+            # Determine maximum articles to scrape based on complexity
+            if complexity == "Simple":
+                max_to_scrape = 6
+            elif complexity == "Moderate":
+                max_to_scrape = 12
+            else:
+                max_to_scrape = 20
 
             # Categorize the search results by their article-level bias dynamically
             lefts = []
@@ -225,7 +300,7 @@ def get_live_news_articles(topic: str) -> str:
 
             for r in results:
                 url = r.get("url", "")
-                bias = articles_bias_map.get(url, "OTHER")
+                bias = articles_bias_map.get(url, "OTHER/NON-POLITICAL")
 
                 if bias == "LEFT":
                     lefts.append(r)
@@ -236,27 +311,41 @@ def get_live_news_articles(topic: str) -> str:
                 else:
                     others.append(r)
 
-            # Select up to 20 articles in a balanced round-robin way
+            # Select candidates based on selection logic
             selected_results = []
-            max_articles = 20
-            bucket_counts = {
-                "LEFT": len(lefts),
-                "RIGHT": len(rights),
-                "CENTER": len(centers),
-                "OTHER": len(others),
-            }
-            queues = [lefts, rights, centers, others]
+            if is_viewpoint:
+                # Use round-robin balanced selection
+                bucket_counts = {
+                    "LEFT": len(lefts),
+                    "RIGHT": len(rights),
+                    "CENTER": len(centers),
+                    "OTHER/NON-POLITICAL": len(others),
+                }
+                queues = [lefts, rights, centers, others]
 
-            while len(selected_results) < max_articles:
-                added = False
-                for q in queues:
-                    if q:
-                        selected_results.append(q.pop(0))
-                        added = True
-                        if len(selected_results) >= max_articles:
-                            break
-                if not added:
-                    break
+                while len(selected_results) < max_to_scrape:
+                    added = False
+                    for q in queues:
+                        if q:
+                            selected_results.append(q.pop(0))
+                            added = True
+                            if len(selected_results) >= max_to_scrape:
+                                break
+                    if not added:
+                        break
+            else:
+                # Prioritize relevance and source quality (bubble wire services first, keeping search relevance rank)
+                sorted_by_quality = sorted(
+                    enumerate(results),
+                    key=lambda x: (0 if x[1].get("wire_service") else 1, x[0])
+                )
+                selected_results = [r for _, r in sorted_by_quality[:max_to_scrape]]
+                bucket_counts = {
+                    "LEFT": sum(1 for r in selected_results if articles_bias_map.get(r.get("url", ""), "") == "LEFT"),
+                    "RIGHT": sum(1 for r in selected_results if articles_bias_map.get(r.get("url", ""), "") == "RIGHT"),
+                    "CENTER": sum(1 for r in selected_results if articles_bias_map.get(r.get("url", ""), "") == "CENTER"),
+                    "OTHER/NON-POLITICAL": sum(1 for r in selected_results if articles_bias_map.get(r.get("url", ""), "") not in ["LEFT", "RIGHT", "CENTER"]),
+                }
 
             # Scrape all selected articles in parallel
             urls = [r.get("url") for r in selected_results if r.get("url")]
@@ -266,15 +355,18 @@ def get_live_news_articles(topic: str) -> str:
 
                 scraped_contents = scrape_articles_parallel(urls)
 
+            status_str = "Moderate" if len(results) < 6 else "Good"
             output = [
-                "SEARCH_STATUS: candidate_pool_built",
+                f"SEARCH_STATUS: {status_str}",
                 f"QUERY: {topic}",
                 f"RAW_CANDIDATES: {raw_count}",
                 f"UNIQUE_CANDIDATES_AFTER_DEDUP: {len(results)}",
                 f"SELECTED_ARTICLES: {len(selected_results)}",
-                "SOURCE_BALANCE: "
+                f"SOURCE_BALANCE: "
                 f"LEFT={bucket_counts['LEFT']}, RIGHT={bucket_counts['RIGHT']}, "
-                f"CENTER={bucket_counts['CENTER']}, OTHER={bucket_counts['OTHER']}",
+                f"CENTER={bucket_counts['CENTER']}, OTHER/NON-POLITICAL={bucket_counts['OTHER/NON-POLITICAL']}",
+                f"TOPIC_COMPLEXITY: {complexity}",
+                f"TOPIC_TYPE: {'viewpoint-oriented' if is_viewpoint else 'factual-oriented'}",
                 "WIRE_GROUPS: "
                 + ("; ".join(wire_groups[:8]) if wire_groups else "None detected"),
                 "---",
@@ -322,33 +414,43 @@ def get_search_agent(model_name: str | None = None) -> Agent:
             f"You are a News Categorizer Agent. Your job is to take a news topic, search for articles "
             f"using your '{tool_name}' tool, and categorize the articles according to the ArticleList schema.\n"
             f"First, perform an initial authenticity screen from the search output. If the tool returns "
-            f"SEARCH_STATUS no_results or insufficient_corroboration, set search_status accordingly, explain "
-            f"the issue in verification_summary, keep articles empty, and do not invent sources. If the query "
+            f"SEARCH_STATUS no_results or Low, set search_status accordingly, explain "
+            f"the issue in verification_summary, keep articles empty, and do not invent sources. If the tool "
+            f"returns Moderate or Good, set search_status to the corresponding returned "
+            f"value. If the query "
             f"appears to contain an obvious name/date/event error but results strongly indicate a correction, "
-            f"set corrected_query and explain the correction in warnings.\n"
-            f"CRITICAL: You MUST process and include at least 12 to 15 articles in the 'articles' list in your response. "
-            f"Do NOT limit your output to only a few (2-4) articles. Process as many articles from the search results as possible (at least 12, up to 18), "
-            f"ensuring a balanced representation across different viewpoints (Left, Right, Center, and Independent).\n"
+            f"set corrected_query and explain the correction in warnings. "
+            f"CRITICAL: Search engine date metadata (the 'Date' field) can sometimes be incorrect or represent early drafts/previews. "
+            f"Always verify dates, timelines, and match/event results from the actual article text and content snippets, "
+            f"and cross-reference multiple sources if dates differ.\n"
+            f"CRITICAL: Do not flag search results as fictional, hypothetical, or speculative solely because they describe events that occurred after your training data cutoff. If multiple credible, independent sources report an event as real news, treat it as authentic rather than as a hypothetical scenario.\n"
+            f"CRITICAL: The number of articles you select and include in the 'articles' list MUST depend on the diversity and complexity of the search results "
+            f"(or as many as possible if search results are limited), based on the 'TOPIC_COMPLEXITY' returned by the tool:\n"
+            f"- 'Simple' (primarily describes a single event with little disagreement or analysis): Select 3 to 6 articles.\n"
+            f"- 'Moderate' (covers multiple aspects of the topic, such as different stakeholders, analyses, or developments): Select 6 to 10 articles.\n"
+            f"- 'High' (reveals a complex, evolving, or controversial topic with multiple independent viewpoints): Select 10 to 15 articles.\n"
+            f"If the tool returns fewer unique articles than the target range, select as many available articles as possible.\n"
+            f"CRITICAL: You must follow the selection logic and method based on 'TOPIC_TYPE' returned by the tool:\n"
+            f"- If the TOPIC_TYPE is 'viewpoint-oriented' (covering political, public policy, legal, economic, or other topics with multiple viewpoints): "
+            f"Use the round-robin balanced selection provided in the search results for a balanced representation of Left, Right, and Center perspectives when such perspectives are available.\n"
+            f"- If the TOPIC_TYPE is 'factual-oriented' (covering topics that are non-political or primarily factual, e.g., sports, science, weather, or a single news event): "
+            f"Prioritize relevance and source quality over viewpoint balance (i.e. select the articles in the order of relevance and source quality as returned by the tool).\n"
+            f"CRITICAL: You MUST search articles only from reliable news sources, such as mainstream wires (e.g., Reuters, AP, AFP), "
+            f"large mainstream outlets (e.g., BBC, NYT, WSJ News, CNN, Fox News), or reputable niche/partisan/independent outlets (e.g., Reason, Democracy Now, ProPublica). "
+            f"You MUST exclude unreliable sources, such as hyper-partisan blogs, anonymous publishers, conspiracy-focused sites, etc.\n"
             f"Do not treat the same wire-service story or likely reprint cluster as independent corroboration. "
-            f"Preserve outlet_group, wire_service, duplicate_cluster, and selection_rationale for each article when available.\n"
+            f"Preserve duplicate_cluster and selection_rationale for each article when available.\n"
             f"For each article, you MUST determine:\n"
-            f"- bias_category: Classify based on the article's actual tone, framing, and content — NOT by publisher name alone. "
-            f"Use 'Left' if the article emphasizes progressive arguments, social justice, or government intervention; "
-            f"'Right' if it emphasizes conservative arguments, free-market solutions, or critiques of regulation; "
-            f"'Center' if the reporting is factual, balanced, and uses a neutral descriptive tone; "
-            f"'Independent' if it presents a non-mainstream or contrarian viewpoint (e.g., libertarian, grassroots, or investigative); "
-            f"or 'Other/Non-Political' if the article is about science, technology, sports, lifestyle, or has no obvious political/ideological bias.\n"
-            f"- media_scale: Local, National, or International.\n"
-            f"- media_type: Mainstream or Independent.\n"
-            f"- source_reliability_score: Quantify the reliability of the publisher (0.0 to 1.0):\n"
-            f"  * Mainstream wires (Reuters, AP, AFP) = 0.90 to 0.95.\n"
-            f"  * Large mainstream outlets (BBC, NYT, WSJ news, CNN, Fox News news) = 0.75 to 0.85.\n"
-            f"  * Reputable niche/partisan/independent outlets (Reason, Democracy Now, ProPublica) = 0.70 to 0.80.\n"
-            f"  * Hyper-partisan blogs, citizen newsletters, or obscure outlets = 0.40 to 0.60.\n"
-            f"- objectivity_score: Analyze the neutral/factual tone of the title and snippet (0.0 to 1.0):\n"
-            f"  * Calm, descriptive, direct (no loaded words) = 0.85 to 0.95.\n"
-            f"  * Slightly framed or opinion-edged = 0.60 to 0.80.\n"
-            f"  * Sensationalized, emotional, or alarmist (words like 'stifling', 'choking', 'regulatory overreach', 'threatens democracy') = 0.30 to 0.50.\n"
+            f"- bias_category: Classify based on the article's actual tone, framing, and content, NOT by publisher name alone. "
+            f"Use 'Left' if the article primarily frames issues from a progressive perspective, emphasizing themes such as social justice, government intervention, labor rights, environmental protection, or critiques of corporate power; "
+            f"'Right' if the article primarily frames issues from a conservative perspective, emphasizing themes such as free markets, limited government, or traditional values; "
+            f"'Center' if the article reports facts in a balanced, descriptive, and neutral manner without clearly advocating a particular political perspective; "
+            f"or 'Other/Non-Political' if the article is non-political (e.g., science, technology, sports, or entertainment), has no obvious political perspective, or presents a viewpoint that does not fit the other categories.\n"
+            f"- neutrality: Classify the neutral/factual tone of the whole article into one of the following three classes:\n"
+            f"  * HIGH_NEUTRALITY: Calm, descriptive, specific, and fact-based. Avoids emotional wording, blame-heavy framing, opinionated claims, and dramatic emphasis.\n"
+            f"  * MEDIUM_NEUTRALITY: Mostly factual but contains mild interpretation, emphasis, or framing. May highlight conflict, consequences, winners or losers, or criticism, but avoids strongly emotional or sensational language.\n"
+            f"  * LOW_NEUTRALITY: Clearly opinionated, promotional, accusatory, sensational, alarmist, mocking, or emotionally charged. Pushes a conclusion more than it reports facts.\n"
+            f"  Do not classify an article as less neutral simply because the topic is political, controversial, or negative.\n"
             f"- full_content_snippet: Extract the most informative, fact-dense section or paragraph of the article "
             f"describing key arguments, statistics, or events. Keep this snippet between 250 and 400 characters to save output tokens.\n"
             f"Finally, write a brief 2-3 sentence summary of the article's core claim.\n"

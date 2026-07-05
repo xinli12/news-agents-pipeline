@@ -100,6 +100,7 @@ custom_metrics:
                   "Center",
                   "Right",
                   "Left",
+                  "Other/Non-Political",
               ]
               perspectives_present = [p for p in perspective_markers if p in response]
 
