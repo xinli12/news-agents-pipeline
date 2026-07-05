@@ -111,7 +111,7 @@ async def run_cli(topic: str):
                 sources_table.add_column("Title & URL", style="cyan")
                 sources_table.add_column("Source", style="green")
                 sources_table.add_column("Bias Rating", justify="center")
-                sources_table.add_column("Snippet Objectivity", justify="center")
+                sources_table.add_column("Tone Neutrality", justify="center")
 
                 for idx, art in enumerate(payload.get("articles", []), 1):
                     bias = art.get("bias_category", "Unknown")
@@ -126,16 +126,26 @@ async def run_cli(topic: str):
                     )
 
                     title_url = f"[bold]{art.get('title', '')}[/bold]\n[dim]{art.get('url', '')}[/dim]"
-                    obj_meter = make_score_meter(
-                        art.get("objectivity_score", 0.0), width=6
-                    )
+                    raw_neutrality = art.get("neutrality", "Unknown")
+                    if raw_neutrality == "HIGH_NEUTRALITY":
+                        neutrality = "High Neutrality"
+                        neut_color = "green"
+                    elif raw_neutrality == "MEDIUM_NEUTRALITY":
+                        neutrality = "Medium Neutrality"
+                        neut_color = "orange"
+                    elif raw_neutrality == "LOW_NEUTRALITY":
+                        neutrality = "Low Neutrality"
+                        neut_color = "red"
+                    else:
+                        neutrality = raw_neutrality
+                        neut_color = "white"
 
                     sources_table.add_row(
                         str(idx),
                         title_url,
                         art.get("source", ""),
                         f"[bold {bias_color}]{bias}[/bold {bias_color}]",
-                        obj_meter,
+                        f"[bold {neut_color}]{neutrality}[/bold {neut_color}]",
                     )
                 console.print(sources_table)
                 console.print()
@@ -600,7 +610,7 @@ def display_results(results: dict):
     sources_table.add_column("Title & URL", style="cyan")
     sources_table.add_column("Source", style="green")
     sources_table.add_column("Bias Rating", justify="center")
-    sources_table.add_column("Snippet Objectivity", justify="center")
+    sources_table.add_column("Tone Neutrality", justify="center")
 
     for idx, art in enumerate(articles_data.get("articles", []), 1):
         bias = art.get("bias_category", "Unknown")
@@ -617,14 +627,26 @@ def display_results(results: dict):
         title_url = (
             f"[bold]{art.get('title', '')}[/bold]\n[dim]{art.get('url', '')}[/dim]"
         )
-        obj_meter = make_score_meter(art.get("objectivity_score", 0.0), width=6)
+        raw_neutrality = art.get("neutrality", "Unknown")
+        if raw_neutrality == "HIGH_NEUTRALITY":
+            neutrality = "High Neutrality"
+            neut_color = "green"
+        elif raw_neutrality == "MEDIUM_NEUTRALITY":
+            neutrality = "Medium Neutrality"
+            neut_color = "orange"
+        elif raw_neutrality == "LOW_NEUTRALITY":
+            neutrality = "Low Neutrality"
+            neut_color = "red"
+        else:
+            neutrality = raw_neutrality
+            neut_color = "white"
 
         sources_table.add_row(
             str(idx),
             title_url,
             art.get("source", ""),
             f"[bold {bias_color}]{bias}[/bold {bias_color}]",
-            obj_meter,
+            f"[bold {neut_color}]{neutrality}[/bold {neut_color}]",
         )
 
     console.print(sources_table)

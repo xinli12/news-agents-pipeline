@@ -19,7 +19,7 @@ class Article(pydantic.BaseModel):
     bias_category: str  # "Left", "Center", "Right", "Independent", "Unknown"
     summary: str
     full_content_snippet: str
-    objectivity_score: float  # 0.0 to 1.0
+    neutrality: str  # "HIGH_NEUTRALITY", "MEDIUM_NEUTRALITY", "LOW_NEUTRALITY"
     duplicate_cluster: str = ""
     selection_rationale: str = ""
 
