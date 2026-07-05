@@ -515,13 +515,23 @@ def render_input_review(review: dict) -> None:
 def article_rows(articles: list[dict]) -> list[dict]:
     rows = []
     for article in articles:
+        raw_neutrality = article.get("neutrality", "")
+        if raw_neutrality == "HIGH_NEUTRALITY":
+            neutrality = "High Neutrality"
+        elif raw_neutrality == "MEDIUM_NEUTRALITY":
+            neutrality = "Medium Neutrality"
+        elif raw_neutrality == "LOW_NEUTRALITY":
+            neutrality = "Low Neutrality"
+        else:
+            neutrality = raw_neutrality
+
         rows.append(
             {
                 "Publisher": article.get("source", ""),
                 "Title": article.get("title", ""),
                 "URL": article.get("url", ""),
                 "Perspective": article.get("bias_category", ""),
-                "Objectivity": clamp_score(article.get("objectivity_score")),
+                "Tone Neutrality": neutrality,
                 "Summary": article.get("summary", ""),
             }
         )
@@ -536,13 +546,26 @@ def render_source_table(articles: list[dict]) -> None:
     import pandas as pd
 
     df = pd.DataFrame(article_rows(articles))
+
+    # Style Tone Neutrality cells with appropriate colors
+    def style_neutrality(val):
+        if val == "High Neutrality":
+            return "color: green; font-weight: bold;"
+        elif val == "Medium Neutrality":
+            return "color: orange; font-weight: bold;"
+        elif val == "Low Neutrality":
+            return "color: red; font-weight: bold;"
+        return ""
+
+    if hasattr(df.style, "map"):
+        styled_df = df.style.map(style_neutrality, subset=["Tone Neutrality"])
+    else:
+        styled_df = df.style.applymap(style_neutrality, subset=["Tone Neutrality"])
+
     st.dataframe(
-        df,
+        styled_df,
         column_config={
             "URL": st.column_config.LinkColumn("URL"),
-            "Objectivity": st.column_config.ProgressColumn(
-                "Objectivity", min_value=0.0, max_value=1.0, format="%.2f"
-            ),
         },
         use_container_width=True,
         hide_index=True,
@@ -560,13 +583,11 @@ def render_landscape(articles_data: dict) -> None:
     rows = article_rows(articles)
     df = pd.DataFrame(rows)
     total = len(rows)
-    avg_obj = sum(row["Objectivity"] for row in rows) / total
     source_balance = articles_data.get("source_balance") or {}
 
-    cols = st.columns(3)
+    cols = st.columns(2)
     cols[0].metric("Sources", total)
-    cols[1].metric("Avg objectivity", f"{avg_obj:.0%}")
-    cols[2].metric("Search status", articles_data.get("search_status", "verified"))
+    cols[1].metric("Search status", articles_data.get("search_status", "verified"))
 
     if articles_data.get("verification_summary"):
         st.info(articles_data["verification_summary"])
