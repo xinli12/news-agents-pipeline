@@ -543,33 +543,104 @@ def render_source_table(articles: list[dict]) -> None:
         st.info("No analyzed sources available.")
         return
 
-    import pandas as pd
+    html_lines = []
+    html_lines.append("<style>")
+    html_lines.append("  .source-table { width: 100%; border-collapse: collapse; font-size: 0.875rem; margin-top: 10px; }")
+    html_lines.append("  .source-table th { background-color: rgba(128, 128, 128, 0.1); border-bottom: 2px solid rgba(128, 128, 128, 0.2); padding: 8px 10px; text-align: left; font-weight: 600; }")
+    html_lines.append("  .source-table td { border-bottom: 1px solid rgba(128, 128, 128, 0.15); padding: 8px 10px; vertical-align: top; word-wrap: break-word; word-break: break-word; }")
+    html_lines.append("  .badge { display: inline-block; padding: 2px 6px; font-size: 0.75rem; font-weight: 600; border-radius: 4px; text-align: center; }")
+    html_lines.append("  .badge-left { background-color: rgba(30, 144, 255, 0.15); color: #1e90ff; }")
+    html_lines.append("  .badge-right { background-color: rgba(220, 20, 60, 0.15); color: #dc143c; }")
+    html_lines.append("  .badge-center { background-color: rgba(255, 140, 0, 0.15); color: #ff8c00; }")
+    html_lines.append("  .badge-other { background-color: rgba(128, 128, 128, 0.15); color: #808080; }")
+    html_lines.append("  .neut-high { color: #2e7d32; font-weight: bold; }")
+    html_lines.append("  .neut-med { color: #ef6c00; font-weight: bold; }")
+    html_lines.append("  .neut-low { color: #c62828; font-weight: bold; }")
+    html_lines.append("  .expandable-text { position: relative; }")
+    html_lines.append("  .full-text { display: none; }")
+    html_lines.append("  .toggle-checkbox:checked ~ .full-text { display: inline; }")
+    html_lines.append("  .toggle-checkbox:checked ~ .truncated-text { display: none; }")
+    html_lines.append("  .toggle-label { color: #1e90ff; cursor: pointer; font-size: 0.8rem; font-weight: 600; display: inline-block; margin-top: 2px; }")
+    html_lines.append("  .toggle-label::before { content: 'Show more'; }")
+    html_lines.append("  .toggle-checkbox:checked ~ .toggle-label::before { content: 'Show less'; }")
+    html_lines.append("</style>")
+    html_lines.append("<table class='source-table'>")
+    html_lines.append("  <thead>")
+    html_lines.append("    <tr>")
+    html_lines.append("      <th style='width: 15%;'>Publisher</th>")
+    html_lines.append("      <th style='width: 35%;'>Title</th>")
+    html_lines.append("      <th style='width: 15%;'>Perspective</th>")
+    html_lines.append("      <th style='width: 15%;'>Neutrality</th>")
+    html_lines.append("      <th style='width: 20%;'>Summary</th>")
+    html_lines.append("    </tr>")
+    html_lines.append("  </thead>")
+    html_lines.append("  <tbody>")
 
-    df = pd.DataFrame(article_rows(articles))
+    for idx, article in enumerate(articles):
+        publisher = article.get("source", "")
+        title = article.get("title", "")
+        url = article.get("url", "")
+        perspective = article.get("bias_category", "")
+        
+        raw_neutrality = str(article.get("neutrality", "")).strip(" ,\"'").upper().replace(" ", "_")
+        if raw_neutrality == "HIGH_NEUTRALITY":
+            neutrality = "High Neutrality"
+            neut_class = "neut-high"
+        elif raw_neutrality == "MEDIUM_NEUTRALITY":
+            neutrality = "Medium Neutrality"
+            neut_class = "neut-med"
+        elif raw_neutrality == "LOW_NEUTRALITY":
+            neutrality = "Low Neutrality"
+            neut_class = "neut-low"
+        else:
+            neutrality = article.get("neutrality", "")
+            neut_class = ""
 
-    # Style Tone Neutrality cells with appropriate colors
-    def style_neutrality(val):
-        if val == "High Neutrality":
-            return "color: green; font-weight: bold;"
-        elif val == "Medium Neutrality":
-            return "color: orange; font-weight: bold;"
-        elif val == "Low Neutrality":
-            return "color: red; font-weight: bold;"
-        return ""
+        if perspective == "Left":
+            badge_class = "badge-left"
+        elif perspective == "Right":
+            badge_class = "badge-right"
+        elif perspective == "Center":
+            badge_class = "badge-center"
+        else:
+            badge_class = "badge-other"
 
-    if hasattr(df.style, "map"):
-        styled_df = df.style.map(style_neutrality, subset=["Tone Neutrality"])
-    else:
-        styled_df = df.style.applymap(style_neutrality, subset=["Tone Neutrality"])
+        summary = article.get("summary", "")
+        
+        if len(summary) > 120:
+            truncated = summary[:120]
+            last_space = truncated.rfind(" ")
+            if last_space > 80:
+                truncated = truncated[:last_space]
+            remaining = summary[len(truncated):]
+            
+            summary_html = (
+                f"<div class='expandable-text'>"
+                f"<input type='checkbox' id='toggle-{idx}' class='toggle-checkbox' style='display: none;'>"
+                f"<span class='truncated-text'>{truncated}...</span>"
+                f"<span class='full-text'>{truncated}{remaining}</span>"
+                f"<label for='toggle-{idx}' class='toggle-label'></label>"
+                f"</div>"
+            )
+        else:
+            summary_html = summary
 
-    st.dataframe(
-        styled_df,
-        column_config={
-            "URL": st.column_config.LinkColumn("URL"),
-        },
-        use_container_width=True,
-        hide_index=True,
-    )
+        title_html = f"<a href='{url}' target='_blank' style='text-decoration: none; color: inherit; font-weight: 500;'>{title}</a>" if url else title
+
+        html_lines.append(
+            f"<tr>"
+            f"<td>{publisher}</td>"
+            f"<td>{title_html}</td>"
+            f"<td><span class='badge {badge_class}'>{perspective}</span></td>"
+            f"<td><span class='{neut_class}'>{neutrality}</span></td>"
+            f"<td>{summary_html}</td>"
+            f"</tr>"
+        )
+
+    html_lines.append("  </tbody>")
+    html_lines.append("</table>")
+
+    st.markdown("".join(html_lines), unsafe_allow_html=True)
 
 
 def render_landscape(articles_data: dict) -> None:
@@ -585,9 +656,7 @@ def render_landscape(articles_data: dict) -> None:
     total = len(rows)
     source_balance = articles_data.get("source_balance") or {}
 
-    cols = st.columns(2)
-    cols[0].metric("Sources", total)
-    cols[1].metric("Search status", articles_data.get("search_status", "verified"))
+    st.metric("Sources", total)
 
     if articles_data.get("verification_summary"):
         st.info(articles_data["verification_summary"])
@@ -599,7 +668,26 @@ def render_landscape(articles_data: dict) -> None:
     st.markdown("#### Source mix")
     counts = df["Perspective"].value_counts().reset_index()
     counts.columns = ["Perspective", "Count"]
-    st.bar_chart(counts, x="Perspective", y="Count", color="Perspective")
+
+    import altair as alt
+
+    chart = (
+        alt.Chart(counts)
+        .mark_arc()
+        .encode(
+            theta=alt.Theta(field="Count", type="quantitative"),
+            color=alt.Color(
+                field="Perspective",
+                type="nominal",
+                scale=alt.Scale(
+                    domain=["Left", "Right", "Center", "Other/Non-Political"],
+                    range=["blue", "red", "orange", "gray"],
+                ),
+            ),
+            tooltip=["Perspective", "Count"],
+        )
+    )
+    st.altair_chart(chart, use_container_width=True)
 
 
 def render_public_summary(results: dict) -> None:
