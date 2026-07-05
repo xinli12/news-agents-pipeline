@@ -47,7 +47,7 @@ INPUT_AUDIT_CRITERIA = (
 
 
 SEARCH_AUDIT_CRITERIA = (
-    "1. Ideological balance (Left, Right, Center, Independent) is preferred but optional. DO NOT reject if the search query simply returns limited viewpoints or articles.\n"
+    "1. Ideological balance (Left, Right, Center, Other/Non-Political) is preferred but optional. DO NOT reject if the search query simply returns limited viewpoints or articles.\n"
     "2. Wire service grouping should be checked, but do not reject if grouping is not applicable or minor.\n"
     "3. Verify search_status, verification_summary, warnings, query_used, and corrected_query are populated consistently.\n"
     "4. Crucially: Do not invent articles if unsupported by search. Only reject if the Search Agent invents completely fake articles or fails to return any results for a known topic."

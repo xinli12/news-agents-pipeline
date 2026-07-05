@@ -462,7 +462,7 @@ def test_classify_topic_characteristics_and_selection_logic() -> None:
         mock_classify.return_value = {"is_viewpoint_oriented": False, "complexity": "Simple"}
         mock_bias_batch.return_value = {
             "http://left1": "LEFT", "http://right1": "RIGHT", "http://center1": "CENTER",
-            "http://center2": "CENTER", "http://other1": "OTHER"
+            "http://center2": "CENTER", "http://other1": "OTHER/NON-POLITICAL"
         }
 
         res_factual = get_live_news_articles("Factual Topic")
@@ -477,7 +477,7 @@ def test_classify_topic_characteristics_and_selection_logic() -> None:
         res_viewpoint = get_live_news_articles("Viewpoint Topic")
         assert "TOPIC_TYPE: viewpoint-oriented" in res_viewpoint
         assert "TOPIC_COMPLEXITY: High" in res_viewpoint
-        # The viewpoint selection should use round-robin: LEFT, RIGHT, CENTER, OTHER
+        # The viewpoint selection should use round-robin: LEFT, RIGHT, CENTER, OTHER/NON-POLITICAL
         # Order should be Left 1, Right 1, Center 1, Other 1, then the rest (Reuters)
         assert "Article #1\nTitle: Article Left 1" in res_viewpoint
         assert "Article #2\nTitle: Article Right 1" in res_viewpoint
