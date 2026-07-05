@@ -545,8 +545,9 @@ def render_source_table(articles: list[dict]) -> None:
 
     html_lines = []
     html_lines.append("<style>")
-    html_lines.append("  .source-table { width: 100%; border-collapse: collapse; font-size: 0.875rem; margin-top: 10px; }")
-    html_lines.append("  .source-table th { background-color: rgba(128, 128, 128, 0.1); border-bottom: 2px solid rgba(128, 128, 128, 0.2); padding: 8px 10px; text-align: left; font-weight: 600; }")
+    html_lines.append("  .source-table-container { max-height: 450px; overflow-y: auto; border: 1px solid rgba(128, 128, 128, 0.2); border-radius: 6px; margin-top: 10px; }")
+    html_lines.append("  .source-table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }")
+    html_lines.append("  .source-table th { position: sticky; top: 0; z-index: 10; background-color: var(--secondary-background-color, #f8f9fa); border-bottom: 2px solid rgba(128, 128, 128, 0.2); padding: 8px 10px; text-align: left; font-weight: 600; }")
     html_lines.append("  .source-table td { border-bottom: 1px solid rgba(128, 128, 128, 0.15); padding: 8px 10px; vertical-align: top; word-wrap: break-word; word-break: break-word; }")
     html_lines.append("  .badge { display: inline-block; padding: 2px 6px; font-size: 0.75rem; font-weight: 600; border-radius: 4px; text-align: center; }")
     html_lines.append("  .badge-left { background-color: rgba(30, 144, 255, 0.15); color: #1e90ff; }")
@@ -564,6 +565,7 @@ def render_source_table(articles: list[dict]) -> None:
     html_lines.append("  .toggle-label::before { content: 'Show more'; }")
     html_lines.append("  .toggle-checkbox:checked ~ .toggle-label::before { content: 'Show less'; }")
     html_lines.append("</style>")
+    html_lines.append("<div class='source-table-container'>")
     html_lines.append("<table class='source-table'>")
     html_lines.append("  <thead>")
     html_lines.append("    <tr>")
@@ -639,6 +641,7 @@ def render_source_table(articles: list[dict]) -> None:
 
     html_lines.append("  </tbody>")
     html_lines.append("</table>")
+    html_lines.append("</div>")
 
     st.markdown("".join(html_lines), unsafe_allow_html=True)
 

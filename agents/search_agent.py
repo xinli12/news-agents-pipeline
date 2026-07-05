@@ -423,6 +423,7 @@ def get_search_agent(model_name: str | None = None) -> Agent:
             f"CRITICAL: Search engine date metadata (the 'Date' field) can sometimes be incorrect or represent early drafts/previews. "
             f"Always verify dates, timelines, and match/event results from the actual article text and content snippets, "
             f"and cross-reference multiple sources if dates differ.\n"
+            f"CRITICAL: Do not flag search results as fictional, hypothetical, or speculative solely because they describe events that occurred after your training data cutoff. If multiple credible, independent sources report an event as real news, treat it as authentic rather than as a hypothetical scenario.\n"
             f"CRITICAL: The number of articles you select and include in the 'articles' list MUST depend on the diversity and complexity of the search results "
             f"(or as many as possible if search results are limited), based on the 'TOPIC_COMPLEXITY' returned by the tool:\n"
             f"- 'Simple' (primarily describes a single event with little disagreement or analysis): Select 3 to 6 articles.\n"

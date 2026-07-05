@@ -213,7 +213,8 @@ class NewsAnalysisCoordinator:
         current_date_prefix = (
             f"The current date is {local_date} (local system time) / {utc_date} (UTC). "
             f"Note: news articles may be dated 1 day ahead or behind due to international timezone differences; "
-            f"treat such minor discrepancies as valid and current, not as future events or hallucinations.\n\n"
+            f"treat such minor discrepancies as valid and current, not as future events or hallucinations.\n"
+            f"Do not treat real-world events that occur after your training data cutoff date as fictional, hypothetical, or speculative. If search results and evidence items report them as real news, treat them as authentic real-world events.\n\n"
         )
         if hasattr(agent, "instruction") and agent.instruction and not agent.instruction.startswith("The current date is"):
             agent.instruction = current_date_prefix + agent.instruction
