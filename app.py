@@ -424,6 +424,16 @@ st.markdown(
         color: var(--teal) !important;
         font-weight: 650 !important;
     }
+    /* Clear visual divider between left and right sections */
+    @media (min-width: 768px) {
+        div[data-testid="column"]:has(.left-section-divider) {
+            border-right: 1.5px solid var(--line);
+            padding-right: 2.5rem !important;
+        }
+        div[data-testid="column"]:has(.left-section-divider) + div[data-testid="column"] {
+            padding-left: 2.5rem !important;
+        }
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -2080,7 +2090,7 @@ def render_restore_panel(snapshot: dict) -> None:
         snapshot_cols[1].metric("Saved", saved_at)
         snapshot_cols[2].metric("Status", str(status).title())
 
-        action_cols = st.columns(3)
+        action_cols = st.columns(2)
         if action_cols[0].button(
             "Restore latest analysis",
             type="primary",
@@ -2092,14 +2102,6 @@ def render_restore_panel(snapshot: dict) -> None:
             st.rerun()
 
         if action_cols[1].button("Start fresh", use_container_width=True):
-            st.session_state["skip_snapshot_restore"] = True
-            st.rerun()
-
-        if action_cols[2].button("Clear saved runs", use_container_width=True):
-            try:
-                clear_saved_runs()
-            except Exception:
-                logger.warning("Clearing saved run snapshots failed", exc_info=True)
             st.session_state["skip_snapshot_restore"] = True
             st.rerun()
 
@@ -2271,6 +2273,7 @@ render_run_notices(results)
 
 analysis_col, briefing_col = st.columns([2.7, 1], gap="medium")
 with analysis_col:
+    st.markdown('<div class="left-section-divider"></div>', unsafe_allow_html=True)
     render_analysis_details_column(results, step_statuses, status)
 with briefing_col:
     render_briefing_column(results, status)
