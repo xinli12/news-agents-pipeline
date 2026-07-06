@@ -588,9 +588,7 @@ def request_stop(state: dict) -> None:
     state.setdefault("control", {})["stopped"] = True
     state.setdefault("control", {})["paused"] = False
     state["status"] = "stopping"
-    state["current_step"] = (
-        "Stop requested. Waiting for the active agent call to unwind."
-    )
+    state["current_step"] = "Stop requested. Waiting for the active agent call to unwind."
     state.setdefault("progress_logs", []).append(
         {
             "step": "stop_requested",
@@ -694,9 +692,7 @@ def support_state(value: str | None, evidence: list[dict] | None) -> tuple[str, 
     support_lower = support.lower()
     if not support:
         support = "Evidence attached" if evidence else "No evidence attached"
-    if any(
-        term in support_lower for term in ["weak", "under", "missing", "unsupported"]
-    ):
+    if any(term in support_lower for term in ["weak", "under", "missing", "unsupported"]):
         return support, "warn"
     if evidence:
         return support, ""
@@ -763,10 +759,7 @@ def render_compact_audit(entries: list[dict], heading: str) -> None:
 
 
 def render_evidence_items(
-    evidence: list[dict],
-    heading: str = "Evidence",
-    max_items: int = 4,
-    show_bias: bool = True,
+    evidence: list[dict], heading: str = "Evidence", max_items: int = 4, show_bias: bool = True
 ) -> None:
     st.markdown(f"**{heading}**")
     if not evidence:
@@ -801,12 +794,7 @@ def render_input_check(input_check: dict) -> None:
     explanation = input_check.get("explanation", "")
     notification = input_check.get("notification_message", "")
 
-    chips = [
-        (
-            action.replace("_", " ").title(),
-            "good" if "accept" in action or action == "convert" else "warn",
-        )
-    ]
+    chips = [(action.replace("_", " ").title(), "good" if "accept" in action or action == "convert" else "warn")]
     if input_check.get("is_news_related") is True:
         chips.append(("News Relevant", "good"))
     else:
@@ -852,33 +840,15 @@ def render_source_table(articles: list[dict]) -> None:
 
     html_lines = []
     html_lines.append("<style>")
-    html_lines.append(
-        "  .source-table-container { max-height: 450px; overflow-y: auto; border: 1px solid rgba(128, 128, 128, 0.2); border-radius: 6px; margin-top: 10px; }"
-    )
-    html_lines.append(
-        "  .source-table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }"
-    )
-    html_lines.append(
-        "  .source-table th { position: sticky; top: 0; z-index: 10; background-color: var(--secondary-background-color, #f8f9fa); border-bottom: 2px solid rgba(128, 128, 128, 0.2); padding: 8px 10px; text-align: left; font-weight: 600; }"
-    )
-    html_lines.append(
-        "  .source-table td { border-bottom: 1px solid rgba(128, 128, 128, 0.15); padding: 8px 10px; vertical-align: top; word-wrap: break-word; word-break: break-word; }"
-    )
-    html_lines.append(
-        "  .badge { display: inline-block; padding: 2px 6px; font-size: 0.75rem; font-weight: 600; border-radius: 4px; text-align: center; }"
-    )
-    html_lines.append(
-        "  .badge-left { background-color: rgba(30, 144, 255, 0.15); color: #1e90ff; }"
-    )
-    html_lines.append(
-        "  .badge-right { background-color: rgba(220, 20, 60, 0.15); color: #dc143c; }"
-    )
-    html_lines.append(
-        "  .badge-center { background-color: rgba(255, 140, 0, 0.15); color: #ff8c00; }"
-    )
-    html_lines.append(
-        "  .badge-other { background-color: rgba(128, 128, 128, 0.15); color: #808080; }"
-    )
+    html_lines.append("  .source-table-container { max-height: 450px; overflow-y: auto; border: 1px solid rgba(128, 128, 128, 0.2); border-radius: 6px; margin-top: 10px; }")
+    html_lines.append("  .source-table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }")
+    html_lines.append("  .source-table th { position: sticky; top: 0; z-index: 10; background-color: var(--secondary-background-color, #f8f9fa); border-bottom: 2px solid rgba(128, 128, 128, 0.2); padding: 8px 10px; text-align: left; font-weight: 600; }")
+    html_lines.append("  .source-table td { border-bottom: 1px solid rgba(128, 128, 128, 0.15); padding: 8px 10px; vertical-align: top; word-wrap: break-word; word-break: break-word; }")
+    html_lines.append("  .badge { display: inline-block; padding: 2px 6px; font-size: 0.75rem; font-weight: 600; border-radius: 4px; text-align: center; }")
+    html_lines.append("  .badge-left { background-color: rgba(30, 144, 255, 0.15); color: #1e90ff; }")
+    html_lines.append("  .badge-right { background-color: rgba(220, 20, 60, 0.15); color: #dc143c; }")
+    html_lines.append("  .badge-center { background-color: rgba(255, 140, 0, 0.15); color: #ff8c00; }")
+    html_lines.append("  .badge-other { background-color: rgba(128, 128, 128, 0.15); color: #808080; }")
     html_lines.append("  .neut-high { color: #2e7d32; font-weight: bold; }")
     html_lines.append("  .neut-med { color: #ef6c00; font-weight: bold; }")
     html_lines.append("  .neut-low { color: #c62828; font-weight: bold; }")
@@ -886,13 +856,9 @@ def render_source_table(articles: list[dict]) -> None:
     html_lines.append("  .full-text { display: none; }")
     html_lines.append("  .toggle-checkbox:checked ~ .full-text { display: inline; }")
     html_lines.append("  .toggle-checkbox:checked ~ .truncated-text { display: none; }")
-    html_lines.append(
-        "  .toggle-label { color: #1e90ff; cursor: pointer; font-size: 0.8rem; font-weight: 600; display: inline-block; margin-top: 2px; }"
-    )
+    html_lines.append("  .toggle-label { color: #1e90ff; cursor: pointer; font-size: 0.8rem; font-weight: 600; display: inline-block; margin-top: 2px; }")
     html_lines.append("  .toggle-label::before { content: 'Show more'; }")
-    html_lines.append(
-        "  .toggle-checkbox:checked ~ .toggle-label::before { content: 'Show less'; }"
-    )
+    html_lines.append("  .toggle-checkbox:checked ~ .toggle-label::before { content: 'Show less'; }")
     html_lines.append("</style>")
     html_lines.append("<div class='source-table-container'>")
     html_lines.append("<table class='source-table'>")
@@ -913,9 +879,7 @@ def render_source_table(articles: list[dict]) -> None:
         url = article.get("url", "")
         perspective = article.get("bias_category", "")
 
-        raw_neutrality = (
-            str(article.get("neutrality", "")).strip(" ,\"'").upper().replace(" ", "_")
-        )
+        raw_neutrality = str(article.get("neutrality", "")).strip(" ,\"'").upper().replace(" ", "_")
         if raw_neutrality == "HIGH_NEUTRALITY":
             neutrality = "High Neutrality"
             neut_class = "neut-high"
@@ -945,7 +909,7 @@ def render_source_table(articles: list[dict]) -> None:
             last_space = truncated.rfind(" ")
             if last_space > 80:
                 truncated = truncated[:last_space]
-            remaining = summary[len(truncated) :]
+            remaining = summary[len(truncated):]
 
             summary_html = (
                 f"<div class='expandable-text'>"
@@ -958,11 +922,7 @@ def render_source_table(articles: list[dict]) -> None:
         else:
             summary_html = summary
 
-        title_html = (
-            f"<a href='{url}' target='_blank' style='text-decoration: none; color: inherit; font-weight: 500;'>{title}</a>"
-            if url
-            else title
-        )
+        title_html = f"<a href='{url}' target='_blank' style='text-decoration: none; color: inherit; font-weight: 500;'>{title}</a>" if url else title
 
         html_lines.append(
             f"<tr>"
@@ -1091,7 +1051,9 @@ def render_consensus_and_timeline(facts: dict) -> None:
         with st.expander(
             f"{idx}. {item.get('claim', 'Untitled fact')}", expanded=idx <= 2
         ):
-            st.markdown(f"**Sources:** {join_or_dash(item.get('supporting_sources'))}")
+            st.markdown(
+                f"**Sources:** {join_or_dash(item.get('supporting_sources'))}"
+            )
             render_evidence_items(item.get("evidence", []), show_bias=False)
             explanation = item.get("explanation")
             if explanation:
@@ -1205,10 +1167,7 @@ def render_disputes(facts: dict, results: dict | None = None) -> None:
                 )
                 render_chips(
                     [
-                        (
-                            f"{count_items(side_a_evidence)} evidence items",
-                            side_a_state,
-                        ),
+                        (f"{count_items(side_a_evidence)} evidence items", side_a_state),
                         (side_a_support, side_a_state),
                     ]
                 )
@@ -1222,10 +1181,7 @@ def render_disputes(facts: dict, results: dict | None = None) -> None:
                 )
                 render_chips(
                     [
-                        (
-                            f"{count_items(side_b_evidence)} evidence items",
-                            side_b_state,
-                        ),
+                        (f"{count_items(side_b_evidence)} evidence items", side_b_state),
                         (side_b_support, side_b_state),
                     ]
                 )
@@ -1313,9 +1269,7 @@ def render_perspectives(narratives: dict, results: dict | None = None) -> None:
                 chips = [(support_status, support_chip)]
                 evidence = profile.get("evidence", [])
                 evidence_state = "" if evidence else "warn"
-                chips.append(
-                    (f"{count_items(evidence)} evidence items", evidence_state)
-                )
+                chips.append((f"{count_items(evidence)} evidence items", evidence_state))
                 if profile.get("unsupported_warning"):
                     chips.append(("not enough source support found", "warn"))
                 render_chips(chips)
@@ -1460,9 +1414,7 @@ def render_audit_trail(results: dict) -> None:
     if warnings:
         st.markdown("### Unresolved warnings")
         for warning in warnings:
-            agent_label = friendly_agent_name(
-                warning.get("agent") or warning.get("step")
-            )
+            agent_label = friendly_agent_name(warning.get("agent") or warning.get("step"))
             st.warning(f"{agent_label}: {warning.get('feedback')}")
             fixes = warning.get("recommended_fixes") or []
             if fixes:
@@ -1674,11 +1626,7 @@ def render_expert_outlook_section(
     outlook = results.get("outlook") or {}
     scenarios = outlook.get("alternative_scenarios") or []
     outlook_step = step_statuses.get("outlook")
-    if (
-        not scenarios
-        and outlook_step in ["queued", "running"]
-        and is_active_run(status)
-    ):
+    if not scenarios and outlook_step in ["queued", "running"] and is_active_run(status):
         render_loading_card(
             "Generating future scenarios",
             "The Future Outlook Agent is modeling likelihood bands and monitoring indicators.",
@@ -1691,6 +1639,9 @@ def render_expert_outlook_section(
         st.divider()
         st.markdown("#### Future outlook")
         render_outlook_scenarios(outlook)
+
+
+
 
 
 def render_briefing_column(results: dict, status: str) -> None:
@@ -1738,6 +1689,7 @@ def render_briefing_column(results: dict, status: str) -> None:
     else:
         st.info("No key takeaways were generated.")
 
+
     if public_report.get("narrative_summary"):
         with st.expander("Narrative synthesis", expanded=False):
             st.write(public_report["narrative_summary"])
@@ -1747,13 +1699,16 @@ def render_briefing_column(results: dict, status: str) -> None:
             st.write(public_report["future_outlook"])
 
 
+
 def render_analysis_details_column(
     results: dict, step_statuses: dict, status: str
 ) -> None:
     st.markdown("## Analysis details")
-    tab_sources, tab_facts, tab_expert = st.tabs(
-        ["Sources", "Facts, Disputes & Perspectives", "Expert & Outlook"]
-    )
+    tab_sources, tab_facts, tab_expert = st.tabs([
+        "Sources",
+        "Facts, Disputes & Perspectives",
+        "Expert & Outlook"
+    ])
     with tab_sources:
         render_sources_section(results, status)
     with tab_facts:
@@ -1900,9 +1855,7 @@ def worker_thread_fn(
                 bypass_input_check=bypass_input_check,
             )
         )
-        final_status = (
-            "stopped" if shared_state["control"].get("stopped") else "completed"
-        )
+        final_status = "stopped" if shared_state["control"].get("stopped") else "completed"
         run_metrics = shared_state.get("run_metrics")
         if isinstance(run_metrics, dict):
             try:
@@ -2143,9 +2096,7 @@ def render_restore_panel(snapshot: dict) -> None:
             type="primary",
             use_container_width=True,
         ):
-            st.session_state["shared_state"] = restore_snapshot_as_display_state(
-                snapshot
-            )
+            st.session_state["shared_state"] = restore_snapshot_as_display_state(snapshot)
             st.session_state["skip_snapshot_restore"] = False
             st.session_state.pop("chat_messages", None)
             st.rerun()
@@ -2326,6 +2277,7 @@ with analysis_col:
     render_analysis_details_column(results, step_statuses, status)
 with briefing_col:
     render_briefing_column(results, status)
+
 
 
 # --- Polling / Auto-rerun Loop for Active Running status ---

@@ -99,7 +99,8 @@ def test_source_independence_warns_for_duplicate_cluster() -> None:
     assert result["distinct_duplicate_clusters"] == 2
     assert result["duplicate_cluster_counts"]["cluster-one"] == 2
     assert any(
-        "duplicate_cluster 'cluster-one'" in warning for warning in result["warnings"]
+        "duplicate_cluster 'cluster-one'" in warning
+        for warning in result["warnings"]
     )
 
 
@@ -132,7 +133,8 @@ def test_source_independence_scores_shared_cluster_plus_independent_source() -> 
     assert result["score"] == 0.667
     assert result["independence_label"] == "partial"
     assert any(
-        "duplicate_cluster 'cluster-one'" in warning for warning in result["warnings"]
+        "duplicate_cluster 'cluster-one'" in warning
+        for warning in result["warnings"]
     )
 
 

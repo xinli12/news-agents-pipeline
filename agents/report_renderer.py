@@ -27,7 +27,7 @@ def _format_evidence_list(evidence: list[dict] | None) -> str:
         if item.get("title"):
             line += f" — {item['title']}"
         if item.get("quote"):
-            line += f', Evidence quote: "{item["quote"]}"'
+            line += f': "{item["quote"]}"'
         lines.append(line)
     return "\n".join(lines)
 
@@ -37,23 +37,6 @@ def _details(summary: str, body: str) -> str:
     if not body:
         return ""
     return f"<details>\n<summary>{summary}</summary>\n\n{body}\n\n</details>\n"
-
-
-def _render_consensus_facts(facts_data: dict) -> str:
-    facts = facts_data.get("consensus_facts") or []
-    if not facts:
-        return ""
-    sections = []
-    for item in facts:
-        sources = ", ".join(item.get("supporting_sources") or [])
-        block = [f"**{item.get('claim', '')}**"]
-        if sources:
-            block.append(f"Supporting Sources: {sources}")
-        if item.get("explanation"):
-            block.append(item["explanation"])
-        block.append(_format_evidence_list(item.get("evidence")))
-        sections.append("\n\n".join(part for part in block if part))
-    return _details("Consensus Facts", "\n\n---\n\n".join(sections))
 
 
 def _render_disputes(disputed_claims: list[dict]) -> str:
@@ -116,9 +99,7 @@ def _render_timeline(facts_data: dict) -> str:
     timeline = facts_data.get("timeline") or []
     if not timeline:
         return ""
-    lines = [
-        f"- **{event.get('date', '')}**: {event.get('event', '')}" for event in timeline
-    ]
+    lines = [f"- **{event.get('date', '')}**: {event.get('event', '')}" for event in timeline]
     return _details("Timeline", "\n".join(lines))
 
 
@@ -202,8 +183,6 @@ def render_public_editor_report(
             "> Some sections were not fully approved by the audit agents. "
             "Review the details below before relying on this report."
         )
-        for warning in unresolved_warnings:
-            lines.append(f"> - {warning}")
         lines.append("")
 
     lines.append(f"# {public_report.get('title') or topic}")
@@ -224,15 +203,12 @@ def render_public_editor_report(
             line += f" ({evidence_links})"
         lines.append(line)
     if public_report.get("narrative_summary"):
-        lines.append(
-            f"\n**Perspective synthesis**: {public_report['narrative_summary']}"
-        )
+        lines.append(f"\n**Perspective synthesis**: {public_report['narrative_summary']}")
     if public_report.get("future_outlook"):
         lines.append(f"\n**What to watch next**: {public_report['future_outlook']}")
     lines.append("")
 
     for section in (
-        _render_consensus_facts(facts_data),
         _render_disputes(facts_data.get("disputed_claims") or []),
         _render_narratives(narratives_data.get("profiles") or []),
         _render_experts(expert_data),
@@ -264,9 +240,7 @@ def render_public_editor_report(
         for item in sources:
             date = f" ({item['published_date']})" if item.get("published_date") else ""
             title = f" — {item['title']}" if item.get("title") else ""
-            lines.append(
-                f"- [{item.get('source', 'Source')}]({item['url']}){title}{date}"
-            )
+            lines.append(f"- [{item.get('source', 'Source')}]({item['url']}){title}{date}")
 
     return {
         "markdown_report": "\n".join(lines).strip() + "\n",
