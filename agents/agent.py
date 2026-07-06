@@ -4,32 +4,28 @@ from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event
 
-from agents.bias_agent import get_bias_agent
-from agents.coordinator import (
-    DISPUTE_AUDIT_CRITERIA,
-    EXPERT_AUDIT_CRITERIA,
-    FACT_AUDIT_CRITERIA,
-    INPUT_AUDIT_CRITERIA,
-    OUTLOOK_AUDIT_CRITERIA,
-    PERSPECTIVE_AUDIT_CRITERIA,
-    PUBLIC_REPORTER_AUDIT_CRITERIA,
-    RECRUITER_AUDIT_CRITERIA,
-    SEARCH_AUDIT_CRITERIA,
-    NewsAnalysisCoordinator,
-    get_audit_agent,
-)
-from agents.dispute_agent import get_dispute_agent
-from agents.expert_agent import (
-    get_domain_expert_agent,
-    get_expert_domain_selector,
-    get_roundtable_summarizer,
-)
-from agents.fact_agent import get_fact_agent
-from agents.input_check_agent import get_input_check_agent
-from agents.outlook_agent import get_outlook_agent
-from agents.public_reporter_agent import get_public_reporter_agent
-from agents.recruiter_agent import get_recruiter_agent
-from agents.search_agent import get_search_agent
+from agents.coordinator import NewsAnalysisCoordinator
+
+
+def _format_evidence_markdown(evidence: list[dict], indent: str = "  ", show_bias: bool = True) -> str:
+    lines = []
+    for item in evidence or []:
+        source = item.get("source", "Unknown source")
+        title = item.get("title", "")
+        url = item.get("url", "")
+        published = item.get("published_date", "")
+        bias = (item.get("bias_category", "")) if show_bias else ""
+        quote = item.get("quote", "")
+        meta = ", ".join(part for part in [published, bias] if part)
+        meta_text = f" ({meta})" if meta else ""
+
+        if url:
+            lines.append(f"{indent}- [{source}]({url}) - {title}{meta_text}")
+        else:
+            lines.append(f"{indent}- {source} - {title}{meta_text}")
+        if quote:
+            lines.append(f'{indent}  - Evidence quote: "{quote}"')
+    return "\n".join(lines)
 
 
 class NewsAnalysisWorkflowAgent(BaseAgent):
@@ -55,26 +51,16 @@ class NewsAnalysisWorkflowAgent(BaseAgent):
             )
             return
 
-        results = {}
+        # Initialize news analysis coordinator
         coordinator = NewsAnalysisCoordinator()
         try:
-            from google.adk.utils.context_utils import Aclosing
-
-            async with Aclosing(
-                coordinator.analyze_async(
-                    topic=user_message,
-                    ctx=ctx,
-                    results_dict=results,
-                )
-            ) as agen:
-                async for event in agen:
-                    yield event
+            results = await coordinator.analyze(user_message)
 
             # Format report as markdown response
             if not results.get("input_checked", True):
                 rejection = results.get("input_check_result", {})
                 response_text = (
-                    f"Rejected: Input Check Rejection\n\n"
+                    f"# Input Check Rejection\n\n"
                     f"**Action**: {rejection.get('action', 'reject_with_confirmation')}\n"
                     f"**Reason**: {rejection.get('explanation', 'Not news-relevant or safe.')}\n\n"
                     f"{rejection.get('notification_message', 'Would you like to revise the request or add news context?')}"
@@ -88,12 +74,13 @@ class NewsAnalysisWorkflowAgent(BaseAgent):
                     f"{search_result.get('verification_summary', 'No sufficiently corroborated news sources were found.')}\n"
                 )
             else:
-                # All content sections (consensus facts, disputes, media framing,
-                # expert roundtable, outlook, sources) are already assembled by
-                # the deterministic report_renderer during the pipeline run, so
-                # the response here only adds banners that renderer doesn't know
-                # about and then reuses that markdown as-is instead of rebuilding
-                # the same sections from raw results a second time.
+                facts = results.get("facts", {})
+                narratives = results.get("narratives", {})
+                experts = results.get("experts", {})
+                public_report = results.get("public_report", {})
+                is_approved = results.get("is_approved", True)
+                editor_logs = results.get("editor_logs", [])
+
                 response_text = ""
                 review_res = results.get("input_check_result", {})
                 if review_res.get("action") == "accept_with_notification":
@@ -102,9 +89,116 @@ class NewsAnalysisWorkflowAgent(BaseAgent):
                         f"> **Input validation note**: {review_res.get('notification_message')}\n\n"
                     )
 
-                response_text += results.get(
-                    "public_editor_report", "No report content was generated."
+                if not is_approved and editor_logs:
+                    last_log = editor_logs[-1]
+                    feedback = last_log.get("feedback", "")
+                    suggestions = ", ".join(last_log.get("suggestions", []))
+                    response_text += (
+                        f"> [!WARNING]\n"
+                        f"> **Editor-in-Chief Revision Warning**: This report was NOT fully approved by the Editor-in-Chief.\n"
+                        f"> *Feedback*: {feedback}\n"
+                        f"> *Suggestions*: {suggestions}\n\n"
+                    )
+
+                audit_warnings = results.get("audit_warnings", [])
+                if audit_warnings:
+                    response_text += "> [!WARNING]\n"
+                    response_text += "> **Unresolved audit warnings remain.** Review the warnings before relying on this report.\n"
+                    for warning in audit_warnings:
+                        response_text += (
+                            f"> - {warning.get('agent')}: {warning.get('feedback')}\n"
+                        )
+                    response_text += "\n"
+
+                response_text += f"# Report: {results.get('topic')}\n\n"
+
+                if public_report:
+                    response_text += (
+                        f"## Public Summary: {public_report.get('title')}\n"
+                    )
+                    response_text += f"{public_report.get('lead_paragraph')}\n\n"
+
+                    response_text += "### Key Takeaways\n"
+                    for takeaway in public_report.get("key_takeaways", []):
+                        if isinstance(takeaway, dict):
+                            response_text += f"- {takeaway.get('point', '')}"
+                            links = [
+                                f"[{item.get('source', 'Source')}]({item.get('url')})"
+                                for item in takeaway.get("evidence") or []
+                                if item.get("url")
+                            ]
+                            if links:
+                                response_text += f" (Sources: {', '.join(links)})"
+                            response_text += "\n"
+                        else:
+                            response_text += f"- {takeaway}\n"
+                    response_text += "\n"
+
+                    response_text += f"### Perspective Synthesis\n{public_report.get('narrative_summary')}\n\n"
+                    response_text += (
+                        f"### Future Outlook\n{public_report.get('future_outlook')}\n\n"
+                    )
+                    response_text += "---\n\n"
+
+                # Consensus
+                response_text += "## Consensus Facts\n"
+                for item in facts.get("consensus_facts", []):
+                    sources = ", ".join(item.get("supporting_sources") or [])
+                    response_text += f"- {item.get('claim')} (Sources: {sources})\n"
+                    explanation = item.get("explanation")
+                    if explanation:
+                        response_text += f"  <details>\n  <summary>Why this is considered a fact</summary>\n  {explanation}\n  </details>\n"
+                    evidence_md = _format_evidence_markdown(
+                        item.get("evidence", []), indent="  ", show_bias=False
+                    )
+                    if evidence_md:
+                        response_text += f"  * Evidence trail:\n{evidence_md}\n"
+
+                # Disputes
+                response_text += "\n## Disputed Claims\n"
+                for item in facts.get("disputed_claims", []):
+                    response_text += f"- **Claim**: {item.get('claim')}\n"
+                    side_a_sources = ", ".join(item.get("side_a_sources") or [])
+                    side_b_sources = ", ".join(item.get("side_b_sources") or [])
+                    response_text += f"  * Side A: {item.get('side_a_assertion')} (Sources: {side_a_sources})\n"
+                    side_a_evidence = _format_evidence_markdown(
+                        item.get("side_a_evidence", []), indent="    "
+                    )
+                    if side_a_evidence:
+                        response_text += f"    * Evidence trail:\n{side_a_evidence}\n"
+                    response_text += f"  * Side B: {item.get('side_b_assertion')} (Sources: {side_b_sources})\n"
+                    side_b_evidence = _format_evidence_markdown(
+                        item.get("side_b_evidence", []), indent="    "
+                    )
+                    if side_b_evidence:
+                        response_text += f"    * Evidence trail:\n{side_b_evidence}\n"
+
+                # Media Framing
+                response_text += "\n## Media Framing\n"
+                for profile in narratives.get("profiles", []):
+                    response_text += f"### {profile.get('perspective_group')}\n"
+                    response_text += f"*Narrative*: {profile.get('core_narrative')}\n"
+                    response_text += "*Arguments*:\n"
+                    for arg in profile.get("key_arguments", []):
+                        response_text += f"  - {arg}\n"
+                    response_text += f"*Omissions*: {', '.join(profile.get('notable_omissions', [])) or 'None'}\n\n"
+
+                # Expert Panel
+                response_text += "## Expert Roundtable\n"
+                for opinion in experts.get("expert_opinions", []):
+                    response_text += f"### {opinion.get('expert_name')} ({opinion.get('expertise_area')})\n"
+                    response_text += f"{opinion.get('commentary')}\n"
+                    response_text += (
+                        f"Cites: {', '.join(opinion.get('cited_references', []))}\n\n"
+                    )
+
+                response_text += (
+                    f"## Roundtable Summary\n{experts.get('roundtable_summary')}\n"
                 )
+
+                if results.get("public_editor_report"):
+                    response_text += "\n\n---\n\n## Editor's Consolidated Dashboard\n"
+                    response_text += results["public_editor_report"]
 
             from google.genai import types as genai_types
 
@@ -135,32 +229,4 @@ class NewsAnalysisWorkflowAgent(BaseAgent):
             )
 
 
-root_agent = NewsAnalysisWorkflowAgent(
-    name="news_analysis_workflow",
-    sub_agents=[
-        get_input_check_agent(),
-        get_search_agent(),
-        get_recruiter_agent(),
-        get_fact_agent(),
-        get_dispute_agent(),
-        get_bias_agent(),
-        get_expert_domain_selector(),
-        get_roundtable_summarizer(),
-        get_outlook_agent(),
-        get_public_reporter_agent(),
-        # Default expert domain examples for visualization
-        get_domain_expert_agent("Public Policy Analyst"),
-        get_domain_expert_agent("Media Ethics Analyst"),
-        get_domain_expert_agent("Financial Analyst"),
-        # Audit agents
-        get_audit_agent("input_check", INPUT_AUDIT_CRITERIA),
-        get_audit_agent("search", SEARCH_AUDIT_CRITERIA),
-        get_audit_agent("recruiter", RECRUITER_AUDIT_CRITERIA),
-        get_audit_agent("fact_bias", FACT_AUDIT_CRITERIA),
-        get_audit_agent("dispute", DISPUTE_AUDIT_CRITERIA),
-        get_audit_agent("bias_agent", PERSPECTIVE_AUDIT_CRITERIA),
-        get_audit_agent("expert", EXPERT_AUDIT_CRITERIA),
-        get_audit_agent("outlook", OUTLOOK_AUDIT_CRITERIA),
-        get_audit_agent("public_report", PUBLIC_REPORTER_AUDIT_CRITERIA),
-    ],
-)
+root_agent = NewsAnalysisWorkflowAgent(name="news_analysis_workflow")

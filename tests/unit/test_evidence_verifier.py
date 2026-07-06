@@ -162,6 +162,9 @@ def test_quote_verifies_against_registered_full_text() -> None:
     assert report["passed"] is True
 
 
+
+
+
 def test_public_report_takeaways_require_verifiable_evidence() -> None:
     report_data = {
         "title": "Policy review briefing",
@@ -193,9 +196,7 @@ def test_expert_citations_checked_for_hyperlinks() -> None:
             {
                 "expert_name": "Macroeconomic Policy Analyst",
                 "cited_references": ["Completely fabricated statute 99-Z"],
-                "recommended_reading_or_context": [
-                    "[Valid Reading](https://example.com/report)"
-                ],
+                "recommended_reading_or_context": ["[Valid Reading](https://example.com/report)"],
                 "supporting_evidence": [
                     {
                         "source": "Example News",
@@ -214,12 +215,12 @@ def test_expert_citations_checked_for_hyperlinks() -> None:
 
     warnings = [issue for issue in report["issues"] if issue["severity"] == "warning"]
     assert any(
-        "cited_references[0]" in issue["path"]
-        and "is not formatted as a markdown link or URL" in issue["message"]
+        "cited_references[0]" in issue["path"] and "is not formatted as a markdown link or URL" in issue["message"]
         for issue in warnings
     )
     assert not any(
-        "recommended_reading_or_context" in issue["path"] for issue in warnings
+        "recommended_reading_or_context" in issue["path"]
+        for issue in warnings
     )
 
 

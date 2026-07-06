@@ -94,11 +94,7 @@ def classify_search_results(
     with an unchanged prompt is unlikely to fix it.
     """
     if not articles:
-        return {
-            "is_viewpoint_oriented": False,
-            "complexity": "Simple",
-            "article_bias": {},
-        }
+        return {"is_viewpoint_oriented": False, "complexity": "Simple", "article_bias": {}}
 
     import os
     import sys
@@ -189,11 +185,7 @@ def classify_search_results(
         "Falling back to default classification.",
         file=sys.stderr,
     )
-    return {
-        "is_viewpoint_oriented": False,
-        "complexity": "Moderate",
-        "article_bias": {},
-    }
+    return {"is_viewpoint_oriented": False, "complexity": "Moderate", "article_bias": {}}
 
 
 def get_live_news_articles(topic: str) -> str:
@@ -342,31 +334,14 @@ def get_live_news_articles(topic: str) -> str:
                 # Prioritize relevance and source quality (bubble wire services first, keeping search relevance rank)
                 sorted_by_quality = sorted(
                     enumerate(results),
-                    key=lambda x: (0 if x[1].get("wire_service") else 1, x[0]),
+                    key=lambda x: (0 if x[1].get("wire_service") else 1, x[0])
                 )
                 selected_results = [r for _, r in sorted_by_quality[:max_to_scrape]]
                 bucket_counts = {
-                    "LEFT": sum(
-                        1
-                        for r in selected_results
-                        if articles_bias_map.get(r.get("url", ""), "") == "LEFT"
-                    ),
-                    "RIGHT": sum(
-                        1
-                        for r in selected_results
-                        if articles_bias_map.get(r.get("url", ""), "") == "RIGHT"
-                    ),
-                    "CENTER": sum(
-                        1
-                        for r in selected_results
-                        if articles_bias_map.get(r.get("url", ""), "") == "CENTER"
-                    ),
-                    "OTHER/NON-POLITICAL": sum(
-                        1
-                        for r in selected_results
-                        if articles_bias_map.get(r.get("url", ""), "")
-                        not in ["LEFT", "RIGHT", "CENTER"]
-                    ),
+                    "LEFT": sum(1 for r in selected_results if articles_bias_map.get(r.get("url", ""), "") == "LEFT"),
+                    "RIGHT": sum(1 for r in selected_results if articles_bias_map.get(r.get("url", ""), "") == "RIGHT"),
+                    "CENTER": sum(1 for r in selected_results if articles_bias_map.get(r.get("url", ""), "") == "CENTER"),
+                    "OTHER/NON-POLITICAL": sum(1 for r in selected_results if articles_bias_map.get(r.get("url", ""), "") not in ["LEFT", "RIGHT", "CENTER"]),
                 }
 
             # Scrape all selected articles in parallel

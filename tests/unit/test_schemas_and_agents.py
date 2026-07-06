@@ -30,9 +30,8 @@ def test_dispute_agent_contract_is_preserved() -> None:
     assert agent.name == "dispute_agent"
     assert agent.output_schema == DisputeList
     assert agent.output_key == "disputes_data"
-    instruction_str = agent.instruction if isinstance(agent.instruction, str) else ""
-    assert "under-supported" in instruction_str
-    assert "wire-service" in instruction_str
+    assert "under-supported" in agent.instruction
+    assert "wire-service" in agent.instruction
 
 
 def test_bias_agent_contract_is_preserved_for_perspective_agent() -> None:
@@ -44,9 +43,8 @@ def test_bias_agent_contract_is_preserved_for_perspective_agent() -> None:
     assert agent.name == "bias_agent"
     assert agent.output_schema == PerspectiveProfile
     assert agent.output_key == "bias_data"
-    instruction_str = agent.instruction if isinstance(agent.instruction, str) else ""
-    assert "Perspective Agent" in instruction_str
-    assert "classification axis" in instruction_str
+    assert "Perspective Agent" in agent.instruction
+    assert "classification axis" in agent.instruction
 
 
 def test_fact_schema_supports_traceable_evidence() -> None:
@@ -115,10 +113,7 @@ def test_dispute_schema_supports_evidence_strength_metadata() -> None:
 
     assert dispute.dispute_question.startswith("Does")
     assert dispute.side_a_support_level == "single-source"
-    assert (
-        dispute.evidence_warning
-        == "Side A is under-supported by the supplied article set."
-    )
+    assert dispute.evidence_warning == "Side A is under-supported by the supplied article set."
 
 
 def test_perspective_schema_supports_axis_and_inference_metadata() -> None:
@@ -150,9 +145,7 @@ def test_perspective_schema_supports_axis_and_inference_metadata() -> None:
             )
         ],
         key_rhetorical_differences="Industry sources emphasized costs; safety sources emphasized risk reduction.",
-        unsupported_perspectives=[
-            "Consumer advocates: not enough source support found."
-        ],
+        unsupported_perspectives=["Consumer advocates: not enough source support found."],
     )
 
     assert profile.classification_axis == "industry/business role"
@@ -175,10 +168,7 @@ def test_input_validation_schema_supports_new_actions() -> None:
 
     assert result.action == "accept_with_notification"
     assert result.is_news_related is True
-    assert (
-        result.notification_message
-        == "Your query is broad. Consider specifying a region or date."
-    )
+    assert result.notification_message == "Your query is broad. Consider specifying a region or date."
     assert result.converted_query == "Keir Starmer recent news"
 
 
@@ -292,10 +282,7 @@ def test_expert_pipeline_factories() -> None:
     )
     assert expert.name == "expert_constitutional_law_specialist"
     assert expert.output_schema == ExpertOpinion
-    expert_instruction_str = (
-        expert.instruction if isinstance(expert.instruction, str) else ""
-    )
-    assert "Constitutional Law Specialist" in expert_instruction_str
+    assert "Constitutional Law Specialist" in expert.instruction
     assert search_authoritative_data in expert.tools
 
     # Simple smoke test for the tool function
@@ -340,9 +327,7 @@ def test_search_candidate_pool_deduplicates_wire_clusters() -> None:
     assert wire_groups
 
 
-def test_dispute_and_perspective_audit_criteria_cover_traceability_and_inference() -> (
-    None
-):
+def test_dispute_and_perspective_audit_criteria_cover_traceability_and_inference() -> None:
     from agents.coordinator import DISPUTE_AUDIT_CRITERIA, PERSPECTIVE_AUDIT_CRITERIA
 
     dispute_criteria = DISPUTE_AUDIT_CRITERIA.lower()
@@ -431,9 +416,7 @@ def test_merge_disputed_claims_deduplicates_dispute_question_fallbacks() -> None
     assert merged[0]["dispute_question"] == (
         "Whether emergency funding reached local agencies."
     )
-    assert (
-        merged[1]["side_a_assertion"] == "Officials say the deadline remains unchanged."
-    )
+    assert merged[1]["side_a_assertion"] == "Officials say the deadline remains unchanged."
 
 
 def test_classify_search_results_combines_topic_and_bias_in_one_call() -> None:
@@ -468,10 +451,7 @@ def test_classify_search_results_retries_transient_errors_then_falls_back() -> N
 
     from agents.search_agent import classify_search_results
 
-    with (
-        patch("google.genai.Client") as mock_client_cls,
-        patch("time.sleep") as mock_sleep,
-    ):
+    with patch("google.genai.Client") as mock_client_cls, patch("time.sleep") as mock_sleep:
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
         mock_client.models.generate_content.side_effect = genai_errors.ServerError(
@@ -479,9 +459,7 @@ def test_classify_search_results_retries_transient_errors_then_falls_back() -> N
         )
 
         res = classify_search_results(
-            "Some topic",
-            [{"title": "Test", "url": "http://example.com/a"}],
-            max_retries=1,
+            "Some topic", [{"title": "Test", "url": "http://example.com/a"}], max_retries=1
         )
 
         # One initial attempt + one retry = 2 calls, with a backoff sleep in between.
@@ -499,10 +477,7 @@ def test_classify_search_results_does_not_retry_content_errors() -> None:
 
     from agents.search_agent import classify_search_results
 
-    with (
-        patch("google.genai.Client") as mock_client_cls,
-        patch("time.sleep") as mock_sleep,
-    ):
+    with patch("google.genai.Client") as mock_client_cls, patch("time.sleep") as mock_sleep:
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
         mock_response = MagicMock()
@@ -510,9 +485,7 @@ def test_classify_search_results_does_not_retry_content_errors() -> None:
         mock_client.models.generate_content.return_value = mock_response
 
         res = classify_search_results(
-            "Some topic",
-            [{"title": "Test", "url": "http://example.com/a"}],
-            max_retries=1,
+            "Some topic", [{"title": "Test", "url": "http://example.com/a"}], max_retries=1
         )
 
         # A malformed response will reproduce under the same prompt, so it
@@ -528,63 +501,32 @@ def test_get_live_news_articles_selection_logic_branches() -> None:
     from agents.search_agent import get_live_news_articles
 
     # Mock ddgs, classify_search_results, scrape_articles_parallel
-    with (
-        patch("agents.search_agent.DDGS") as mock_ddgs,
-        patch("agents.search_agent.classify_search_results") as mock_classify,
-        patch("agents.web_tools.scrape_articles_parallel") as mock_scrape,
-    ):
+    with patch("agents.search_agent.DDGS") as mock_ddgs, \
+         patch("agents.search_agent.classify_search_results") as mock_classify, \
+         patch("agents.web_tools.scrape_articles_parallel") as mock_scrape:
+
         # Setup mock search results
         mock_news = MagicMock()
         mock_ddgs.return_value.__enter__.return_value = mock_news
 
         dummy_results = [
-            {
-                "title": "Article Left 1",
-                "url": "http://left1",
-                "source": "Left Outlet 1",
-                "body": "body 1",
-            },
-            {
-                "title": "Article Right 1",
-                "url": "http://right1",
-                "source": "Right Outlet 1",
-                "body": "body 2",
-            },
-            {
-                "title": "Article Center 1",
-                "url": "http://center1",
-                "source": "Center Outlet 1",
-                "body": "body 3",
-            },
-            {
-                "title": "Article Wire Center 2",
-                "url": "http://center2",
-                "source": "Reuters",
-                "body": "body 4",
-            },
-            {
-                "title": "Article Other 1",
-                "url": "http://other1",
-                "source": "Other Outlet 1",
-                "body": "body 5",
-            },
+            {"title": "Article Left 1", "url": "http://left1", "source": "Left Outlet 1", "body": "body 1"},
+            {"title": "Article Right 1", "url": "http://right1", "source": "Right Outlet 1", "body": "body 2"},
+            {"title": "Article Center 1", "url": "http://center1", "source": "Center Outlet 1", "body": "body 3"},
+            {"title": "Article Wire Center 2", "url": "http://center2", "source": "Reuters", "body": "body 4"},
+            {"title": "Article Other 1", "url": "http://other1", "source": "Other Outlet 1", "body": "body 5"},
         ]
         mock_news.news.return_value = dummy_results
         mock_scrape.return_value = {}
 
         article_bias = {
-            "http://left1": "LEFT",
-            "http://right1": "RIGHT",
-            "http://center1": "CENTER",
-            "http://center2": "CENTER",
-            "http://other1": "OTHER/NON-POLITICAL",
+            "http://left1": "LEFT", "http://right1": "RIGHT", "http://center1": "CENTER",
+            "http://center2": "CENTER", "http://other1": "OTHER/NON-POLITICAL"
         }
 
         # Case A: Factual-oriented (is_viewpoint_oriented = False, complexity = Simple)
         mock_classify.return_value = {
-            "is_viewpoint_oriented": False,
-            "complexity": "Simple",
-            "article_bias": article_bias,
+            "is_viewpoint_oriented": False, "complexity": "Simple", "article_bias": article_bias
         }
 
         res_factual = get_live_news_articles("Factual Topic")
@@ -598,9 +540,7 @@ def test_get_live_news_articles_selection_logic_branches() -> None:
 
         # Case B: Viewpoint-oriented (is_viewpoint_oriented = True, complexity = High)
         mock_classify.return_value = {
-            "is_viewpoint_oriented": True,
-            "complexity": "High",
-            "article_bias": article_bias,
+            "is_viewpoint_oriented": True, "complexity": "High", "article_bias": article_bias
         }
         res_viewpoint = get_live_news_articles("Viewpoint Topic")
         assert "TOPIC_TYPE: viewpoint-oriented" in res_viewpoint
@@ -633,12 +573,11 @@ def test_is_transient_error_classifies_api_vs_content_failures() -> None:
 
 def test_run_agent_retries_immediately_and_injects_error_context() -> None:
     import asyncio
+    from unittest.mock import MagicMock, patch
 
     from google.adk.agents import Agent
-    from google.adk.events import Event
-    from google.adk.sessions import Session
 
-    from agents.coordinator import InvocationContext, NewsAnalysisCoordinator
+    from agents.coordinator import NewsAnalysisCoordinator
     from agents.schemas import AuditResult
 
     coordinator = NewsAnalysisCoordinator()
@@ -653,43 +592,32 @@ def test_run_agent_retries_immediately_and_injects_error_context() -> None:
     captured_prompts = []
     call_count = {"n": 0}
 
-    async def fake_run_async(self, ctx):
+    async def fake_run_async(*, user_id, session_id, new_message):
         call_count["n"] += 1
-        last_event = ctx.session.events[-1]
-        captured_prompts.append(last_event.content.parts[0].text)
+        captured_prompts.append(new_message.parts[0].text)
         if call_count["n"] == 1:
             raise ValueError("malformed structured output")
-        ctx.session.state["audit_result"] = {
+        # InMemorySessionService.get_session() returns a copy, so mutating it
+        # would not persist; write directly into the service's backing store
+        # the way append_event() would, to simulate a successful agent turn.
+        stored_session = coordinator.session_service.sessions["news_app"]["user"][
+            session_id
+        ]
+        stored_session.state["audit_result"] = {
             "is_approved": True,
             "audit_feedback": [],
             "recommended_fixes": [],
         }
-        yield Event(author="dummy_agent")
+        return
+        yield  # pragma: no cover - marks this as an async generator
 
-    session = Session(
-        app_name="news_app",
-        user_id="user",
-        id="sess_test",
-    )
+    mock_runner = MagicMock()
+    mock_runner.run_async = fake_run_async
 
-    ctx = InvocationContext(
-        invocation_id="sess_test",
-        session_service=coordinator.session_service,
-        session=session,
-    )
-
-    async def run_test():
-        res_list = []
-        async for _ in coordinator._run_agent(
-            agent, "Do the thing.", ctx, res_list, max_retries=3
-        ):
-            pass
-        return res_list[0] if res_list else None
-
-    from unittest.mock import patch
-
-    with patch.object(agent.__class__, "run_async", new=fake_run_async):
-        result = asyncio.run(run_test())
+    with patch("agents.coordinator.Runner", return_value=mock_runner):
+        result = asyncio.run(
+            coordinator._run_agent(agent, "Do the thing.", "sess_test", max_retries=3)
+        )
 
     assert result == {
         "is_approved": True,
@@ -701,157 +629,3 @@ def test_run_agent_retries_immediately_and_injects_error_context() -> None:
     assert captured_prompts[1].startswith("Do the thing.")
     assert "malformed structured output" in captured_prompts[1]
 
-
-def test_get_audit_agent_contract() -> None:
-    from agents.coordinator import get_audit_agent
-    from agents.schemas import AuditResult
-
-    agent = get_audit_agent("dummy_target", "Some criteria text.")
-
-    assert agent.name == "dummy_target_audit"
-    assert agent.output_schema == AuditResult
-    assert agent.output_key == "audit_result"
-    instruction_str = agent.instruction if isinstance(agent.instruction, str) else ""
-    assert "Some criteria text." in instruction_str
-
-
-def test_run_agent_with_audit_retries_until_approved() -> None:
-    import asyncio
-    from unittest.mock import patch
-
-    from google.adk.agents import Agent
-    from google.adk.events import Event
-    from google.adk.sessions import Session
-
-    from agents.coordinator import InvocationContext, NewsAnalysisCoordinator
-
-    coordinator = NewsAnalysisCoordinator()
-    target_agent = Agent(
-        name="dummy_target",
-        model="gemini-3.1-flash-lite",
-        instruction="Produce output.",
-        output_key="dummy_output",
-    )
-
-    call_count = {"target": 0, "audit": 0}
-    captured_prompts = []
-
-    async def fake_run_async(self, ctx):
-        prompt = ctx.session.events[-1].content.parts[0].text
-        if self.name == "dummy_target":
-            call_count["target"] += 1
-            captured_prompts.append(prompt)
-            ctx.session.state["dummy_output"] = {"value": call_count["target"]}
-            yield Event(author=self.name)
-        else:
-            call_count["audit"] += 1
-            approved = call_count["audit"] >= 2
-            ctx.session.state["audit_result"] = {
-                "is_approved": approved,
-                "audit_feedback": [] if approved else ["needs more detail"],
-                "recommended_fixes": [] if approved else ["add a source"],
-            }
-            yield Event(author=self.name)
-
-    async def noop_callback(*args, **kwargs) -> None:
-        return None
-
-    session = Session(app_name="news_app", user_id="user", id="sess_test_audit")
-    ctx = InvocationContext(
-        invocation_id="sess_test_audit",
-        session_service=coordinator.session_service,
-        session=session,
-    )
-    editor_logs: list = []
-    out_result: list = []
-
-    async def run_test():
-        async for _ in coordinator._run_agent_with_audit(
-            target_agent,
-            lambda feedback, suggestions: f"Produce output. Feedback: {feedback}"
-            if feedback
-            else "Produce output.",
-            "Some criteria.",
-            ctx,
-            noop_callback,
-            "dummy_step",
-            editor_logs,
-            out_result,
-            max_revision_cycles=2,
-        ):
-            pass
-
-    with patch.object(Agent, "run_async", new=fake_run_async):
-        asyncio.run(run_test())
-
-    assert call_count == {"target": 2, "audit": 2}
-    assert out_result == [({"value": 2}, True)]
-    assert captured_prompts == [
-        "Produce output.",
-        "Produce output. Feedback: needs more detail",
-    ]
-    assert [log["approved"] for log in editor_logs] == [False, True]
-
-
-def test_run_agent_with_audit_gives_up_after_revision_limit() -> None:
-    import asyncio
-    from unittest.mock import patch
-
-    from google.adk.agents import Agent
-    from google.adk.events import Event
-    from google.adk.sessions import Session
-
-    from agents.coordinator import InvocationContext, NewsAnalysisCoordinator
-
-    coordinator = NewsAnalysisCoordinator()
-    target_agent = Agent(
-        name="dummy_target_2",
-        model="gemini-3.1-flash-lite",
-        instruction="Produce output.",
-        output_key="dummy_output",
-    )
-
-    async def fake_run_async(self, ctx):
-        if self.name == "dummy_target_2":
-            ctx.session.state["dummy_output"] = {"value": "draft"}
-        else:
-            ctx.session.state["audit_result"] = {
-                "is_approved": False,
-                "audit_feedback": ["still missing sources"],
-                "recommended_fixes": ["cite a source"],
-            }
-        yield Event(author=self.name)
-
-    async def noop_callback(*args, **kwargs) -> None:
-        return None
-
-    session = Session(app_name="news_app", user_id="user", id="sess_test_audit_2")
-    ctx = InvocationContext(
-        invocation_id="sess_test_audit_2",
-        session_service=coordinator.session_service,
-        session=session,
-    )
-    editor_logs: list = []
-    out_result: list = []
-
-    async def run_test():
-        async for _ in coordinator._run_agent_with_audit(
-            target_agent,
-            lambda feedback, suggestions: "Produce output.",
-            "Some criteria.",
-            ctx,
-            noop_callback,
-            "dummy_step",
-            editor_logs,
-            out_result,
-            max_revision_cycles=1,
-        ):
-            pass
-
-    with patch.object(Agent, "run_async", new=fake_run_async):
-        asyncio.run(run_test())
-
-    # max_revision_cycles=1 allows 2 attempts total, both rejected.
-    assert out_result == [({"value": "draft"}, False)]
-    assert len(editor_logs) == 2
-    assert all(not log["approved"] for log in editor_logs)
