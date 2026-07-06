@@ -81,6 +81,10 @@ def create_run_metrics(
         "final_status": "running",
         "steps": {},
         "agent_calls": {"total": 0, "by_agent": {}},
+        "agent_timings": {
+            "total_duration_seconds": 0.0,
+            "by_agent": {},
+        },
         "audits": {
             "attempt_count": 0,
             "approved_count": 0,
@@ -374,12 +378,61 @@ def record_agent_token_usage(
     )
 
 
+def record_agent_timing(
+    metrics: dict[str, Any],
+    agent_name: str | None,
+    duration_seconds: float | int | None,
+    status: str = "completed",
+) -> None:
+    try:
+        duration = max(0.0, float(duration_seconds or 0.0))
+    except (TypeError, ValueError):
+        duration = 0.0
+
+    agent_label = str(agent_name or "unknown_agent")
+    timings = metrics.setdefault(
+        "agent_timings", {"total_duration_seconds": 0.0, "by_agent": {}}
+    )
+    by_agent = timings.setdefault("by_agent", {})
+    agent_timing = by_agent.setdefault(
+        agent_label,
+        {
+            "call_count": 0,
+            "duration_seconds": 0.0,
+            "duration_display": "0.0s",
+            "last_duration_seconds": 0.0,
+            "last_duration_display": "0.0s",
+            "last_status": status,
+        },
+    )
+    agent_timing["call_count"] = int(agent_timing.get("call_count") or 0) + 1
+    agent_timing["duration_seconds"] = round(
+        float(agent_timing.get("duration_seconds") or 0.0) + duration,
+        3,
+    )
+    agent_timing["duration_display"] = format_duration(
+        agent_timing["duration_seconds"]
+    )
+    agent_timing["last_duration_seconds"] = round(duration, 3)
+    agent_timing["last_duration_display"] = format_duration(duration)
+    agent_timing["last_status"] = status
+    timings["total_duration_seconds"] = round(
+        sum(float(item.get("duration_seconds") or 0.0) for item in by_agent.values()),
+        3,
+    )
+    timings["total_duration_display"] = format_duration(
+        timings["total_duration_seconds"]
+    )
+
+
 def record_result_token_estimate(
     metrics: dict[str, Any],
     results: Mapping[str, Any] | None,
     label: str = "workflow_result",
 ) -> None:
     if not results:
+        return
+    if (metrics.get("token_usage") or {}).get("by_agent"):
         return
     result_snapshot = {
         key: value
@@ -528,7 +581,7 @@ def _merge_token_usage(
     agent_usage["output_tokens"] += output_tokens
     agent_usage["total_tokens"] += total_tokens
     if agent_usage.get("usage_type") != usage_type:
-        agent_usage["usage_type"] = "estimated"
+        agent_usage["usage_type"] = "mixed"
 
     token_usage["actual_usage_seen"] = bool(token_usage.get("actual_usage_seen")) or (
         usage_type == "actual"
@@ -552,12 +605,16 @@ def _refresh_token_usage(metrics: dict[str, Any]) -> None:
         token_usage["input_tokens"] = input_tokens
         token_usage["output_tokens"] = output_tokens
         token_usage["total_tokens"] = total_tokens
-        token_usage["usage_type"] = (
-            "actual"
-            if token_usage.get("actual_usage_seen")
-            and not token_usage.get("estimated_usage_seen")
-            else "estimated"
-        )
+        actual_seen = bool(token_usage.get("actual_usage_seen"))
+        estimated_seen = bool(token_usage.get("estimated_usage_seen"))
+        if actual_seen and estimated_seen:
+            token_usage["usage_type"] = "mixed"
+        elif actual_seen:
+            token_usage["usage_type"] = "actual"
+        elif estimated_seen:
+            token_usage["usage_type"] = "estimated"
+        else:
+            token_usage["usage_type"] = "not_available"
     else:
         token_usage["input_tokens"] = None
         token_usage["output_tokens"] = None

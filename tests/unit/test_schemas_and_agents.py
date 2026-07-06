@@ -420,7 +420,8 @@ def test_merge_disputed_claims_deduplicates_dispute_question_fallbacks() -> None
 
 
 def test_classify_topic_characteristics_and_selection_logic() -> None:
-    from unittest.mock import patch, MagicMock
+    from unittest.mock import MagicMock, patch
+
     from agents.search_agent import classify_topic_characteristics
 
     # 1. Test classify_topic_characteristics
@@ -482,4 +483,3 @@ def test_classify_topic_characteristics_and_selection_logic() -> None:
         assert "Article #1\nTitle: Article Left 1" in res_viewpoint
         assert "Article #2\nTitle: Article Right 1" in res_viewpoint
         assert "Article #3\nTitle: Article Center 1" in res_viewpoint
-

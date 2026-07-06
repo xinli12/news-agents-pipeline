@@ -10,6 +10,7 @@ from agents.app_utils.run_metrics import (
     format_duration,
     merge_usage_counts,
     record_agent_call,
+    record_agent_timing,
     record_agent_token_usage,
     record_progress_event,
     record_result_token_estimate,
@@ -66,6 +67,46 @@ def test_actual_usage_metadata_is_extracted_from_adk_event_shape() -> None:
     }
 
 
+def test_actual_usage_metadata_is_extracted_from_mapping_shape() -> None:
+    event = {
+        "usage_metadata": {
+            "promptTokenCount": 11,
+            "candidatesTokenCount": 9,
+            "totalTokenCount": 20,
+        }
+    }
+
+    assert extract_event_token_usage(event) == {
+        "input": 11,
+        "output": 9,
+        "total": 20,
+    }
+
+
+def test_agent_usage_records_actual_tokens_when_metadata_exists() -> None:
+    metrics = create_run_metrics("test-model", start_timestamp=100.0)
+
+    record_agent_token_usage(
+        metrics,
+        "search_agent",
+        prompt_text="prompt text is not stored",
+        output_value={"response": "not stored"},
+        actual_usage={"input": 12, "output": 8, "total": 20},
+    )
+
+    usage = metrics["token_usage"]
+    agent_usage = usage["by_agent"]["search_agent"]
+    assert usage["usage_type"] == "actual"
+    assert usage["actual_usage_seen"] is True
+    assert usage["estimated_usage_seen"] is False
+    assert usage["input_tokens"] == 12
+    assert usage["output_tokens"] == 8
+    assert usage["total_tokens"] == 20
+    assert agent_usage["usage_type"] == "actual"
+    assert "prompt text is not stored" not in str(agent_usage)
+    assert "not stored" not in str(agent_usage)
+
+
 def test_agent_usage_falls_back_to_estimated_tokens() -> None:
     metrics = create_run_metrics("test-model", start_timestamp=100.0)
 
@@ -84,6 +125,52 @@ def test_agent_usage_falls_back_to_estimated_tokens() -> None:
     assert usage["input_tokens"] == 2
     assert usage["output_tokens"] > 0
     assert usage["total_tokens"] == usage["input_tokens"] + usage["output_tokens"]
+
+
+def test_token_usage_labels_mixed_actual_and_estimated_agents() -> None:
+    metrics = create_run_metrics("test-model", start_timestamp=100.0)
+
+    record_agent_token_usage(
+        metrics,
+        "search_agent",
+        actual_usage={"input": 10, "output": 5, "total": 15},
+    )
+    record_agent_token_usage(
+        metrics,
+        "fact_agent",
+        prompt_text="x" * 8,
+        output_value={"answer": "y" * 8},
+    )
+
+    usage = metrics["token_usage"]
+    assert usage["usage_type"] == "mixed"
+    assert usage["actual_usage_seen"] is True
+    assert usage["estimated_usage_seen"] is True
+    assert usage["by_agent"]["search_agent"]["usage_type"] == "actual"
+    assert usage["by_agent"]["fact_agent"]["usage_type"] == "estimated"
+
+    record_agent_token_usage(
+        metrics,
+        "search_agent",
+        prompt_text="fallback",
+        output_value=None,
+    )
+    assert usage["by_agent"]["search_agent"]["usage_type"] == "mixed"
+
+
+def test_agent_timing_aggregation_records_per_agent_duration() -> None:
+    metrics = create_run_metrics("test-model", start_timestamp=100.0)
+
+    record_agent_timing(metrics, "search_agent", 1.25)
+    record_agent_timing(metrics, "search_agent", 2.0, status="retry")
+    record_agent_timing(metrics, "fact_agent", 3.5)
+
+    timings = metrics["agent_timings"]
+    assert timings["total_duration_seconds"] == 6.75
+    assert timings["by_agent"]["search_agent"]["call_count"] == 2
+    assert timings["by_agent"]["search_agent"]["duration_seconds"] == 3.25
+    assert timings["by_agent"]["search_agent"]["last_status"] == "retry"
+    assert timings["by_agent"]["fact_agent"]["duration_display"] == "3.5s"
 
 
 def test_step_call_counting_deduplicates_progress_starts() -> None:
@@ -114,6 +201,25 @@ def test_result_token_estimate_does_not_store_result_payload() -> None:
     assert usage["usage_type"] == "estimated"
     assert usage["output_tokens"] > 0
     assert "public_report" not in str(usage["by_agent"]["workflow_result"])
+
+
+def test_result_token_estimate_is_skipped_when_agent_usage_exists() -> None:
+    metrics = create_run_metrics("test-model", start_timestamp=100.0)
+    record_agent_token_usage(
+        metrics,
+        "search_agent",
+        actual_usage={"input": 12, "output": 8, "total": 20},
+    )
+
+    record_result_token_estimate(
+        metrics,
+        {"public_report": {"lead_paragraph": "A generated summary."}},
+    )
+
+    usage = metrics["token_usage"]
+    assert usage["usage_type"] == "actual"
+    assert usage["total_tokens"] == 20
+    assert "workflow_result" not in usage["by_agent"]
 
 
 def test_cost_estimate_unknown_model_returns_not_available() -> None:

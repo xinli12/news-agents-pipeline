@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from typing import Any
 
@@ -11,6 +12,12 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
+from agents.app_utils.run_metrics import (
+    extract_event_token_usage,
+    merge_usage_counts,
+    record_agent_timing,
+    record_agent_token_usage,
+)
 from agents.bias_agent import get_bias_agent
 from agents.dispute_agent import get_dispute_agent
 from agents.evidence_verifier import (
@@ -28,7 +35,7 @@ from agents.public_editor_agent import get_public_editor_agent
 from agents.public_reporter_agent import get_public_reporter_agent
 from agents.recruiter_agent import get_recruiter_agent
 from agents.review_agent import get_input_check_agent
-from agents.schemas import AuditResult, InputValidationResult
+from agents.schemas import AuditResult
 from agents.search_agent import get_search_agent
 
 
@@ -184,6 +191,15 @@ class NewsAnalysisCoordinator:
     def __init__(self):
         self.session_service = InMemorySessionService()
 
+    def _run_metrics_from_control_state(
+        self, control_state: dict | None
+    ) -> dict[str, Any] | None:
+        if isinstance(control_state, dict) and isinstance(
+            control_state.get("run_metrics"), dict
+        ):
+            return control_state["run_metrics"]
+        return None
+
     async def _check_controls(self, control_state: dict | None):
         if not control_state:
             return
@@ -200,14 +216,19 @@ class NewsAnalysisCoordinator:
             control_state["status"] = "running"
 
     async def _run_agent(
-        self, agent, prompt_text: str, session_id: str, max_retries: int = 3
+        self,
+        agent,
+        prompt_text: str,
+        session_id: str,
+        max_retries: int = 3,
+        run_metrics: dict[str, Any] | None = None,
     ):
         """Helper to invoke an ADK Agent using the Runner and retrieve the structured output state."""
         logger = logging.getLogger(__name__)
 
         import datetime
         now = datetime.datetime.now()
-        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        now_utc = datetime.datetime.now(datetime.UTC)
         local_date = now.strftime('%B %d, %Y')
         utc_date = now_utc.strftime('%B %d, %Y')
         current_date_prefix = (
@@ -220,6 +241,9 @@ class NewsAnalysisCoordinator:
             agent.instruction = current_date_prefix + agent.instruction
 
         for attempt in range(1, max_retries + 1):
+            started_at = time.perf_counter()
+            usage_counts: dict[str, int] = {}
+            output_value = None
             try:
                 agent_session_id = f"{session_id}_{agent.name}_{attempt}"
 
@@ -239,14 +263,16 @@ class NewsAnalysisCoordinator:
                 )
 
                 # Execute the agent run to completion
-                async for _event in runner.run_async(
+                async for event in runner.run_async(
                     user_id="user",
                     session_id=agent_session_id,
                     new_message=types.Content(
                         role="user", parts=[types.Part.from_text(text=prompt_text)]
                     ),
                 ):
-                    pass
+                    usage_counts = merge_usage_counts(
+                        usage_counts, extract_event_token_usage(event)
+                    )
 
                 session = await self.session_service.get_session(
                     app_name="news_app", user_id="user", session_id=agent_session_id
@@ -255,13 +281,33 @@ class NewsAnalysisCoordinator:
                 if agent.output_key:
                     val = session.state.get(agent.output_key)
                     if hasattr(val, "model_dump"):
-                        return val.model_dump()
+                        output_value = val.model_dump()
                     elif hasattr(val, "dict"):
-                        return val.dict()
-                    return val
-                return None
+                        output_value = val.dict()
+                    else:
+                        output_value = val
+                self._record_agent_runtime_metrics(
+                    run_metrics,
+                    agent.name,
+                    prompt_text,
+                    output_value,
+                    usage_counts,
+                    time.perf_counter() - started_at,
+                    "completed",
+                )
+                return output_value
 
             except Exception as e:
+                status = "failed" if attempt == max_retries else "retry"
+                self._record_agent_runtime_metrics(
+                    run_metrics,
+                    agent.name,
+                    prompt_text,
+                    output_value,
+                    usage_counts,
+                    time.perf_counter() - started_at,
+                    status,
+                )
                 if attempt == max_retries:
                     logger.error(
                         "Agent '%s' failed after %d attempts: %s",
@@ -280,6 +326,39 @@ class NewsAnalysisCoordinator:
                     backoff,
                 )
                 await asyncio.sleep(backoff)
+
+    def _record_agent_runtime_metrics(
+        self,
+        run_metrics: dict[str, Any] | None,
+        agent_name: str | None,
+        prompt_text: str | None,
+        output_value: Any,
+        usage_counts: dict[str, int] | None,
+        duration_seconds: float,
+        status: str,
+    ) -> None:
+        if not isinstance(run_metrics, dict):
+            return
+        try:
+            record_agent_timing(
+                run_metrics,
+                agent_name,
+                duration_seconds=duration_seconds,
+                status=status,
+            )
+            record_agent_token_usage(
+                run_metrics,
+                agent_name,
+                prompt_text=prompt_text,
+                output_value=output_value,
+                actual_usage=usage_counts,
+            )
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "Recording runtime metrics failed for agent '%s'",
+                agent_name,
+                exc_info=True,
+            )
 
     async def _run_agent_with_audit(
         self,
@@ -300,11 +379,14 @@ class NewsAnalysisCoordinator:
         suggestions = []
         output_data = None
         max_attempts = max_revision_cycles + 1
+        run_metrics = self._run_metrics_from_control_state(control_state)
 
         for attempt in range(1, max_attempts + 1):
             await self._check_controls(control_state)
             prompt_text = prompt_generator(feedback_text, suggestions)
-            output_data = await self._run_agent(agent, prompt_text, session_id)
+            output_data = await self._run_agent(
+                agent, prompt_text, session_id, run_metrics=run_metrics
+            )
 
             deterministic_report = None
             if deterministic_check:
@@ -359,7 +441,9 @@ class NewsAnalysisCoordinator:
             )
 
             await self._check_controls(control_state)
-            audit_result = await self._run_agent(audit_agent, audit_prompt, session_id)
+            audit_result = await self._run_agent(
+                audit_agent, audit_prompt, session_id, run_metrics=run_metrics
+            )
 
             is_approved = (
                 audit_result.get("is_approved", False) if audit_result else False
@@ -993,6 +1077,7 @@ class NewsAnalysisCoordinator:
                         "Select the 2-3 most appropriate expert domains."
                     ),
                     session_id,
+                    run_metrics=self._run_metrics_from_control_state(control_state),
                 )
                 domains = [
                     str(domain).strip()
@@ -1061,6 +1146,9 @@ class NewsAnalysisCoordinator:
                         summarizer,
                         f"Topic: {topic}\nExpert commentaries:\n{json.dumps(opinions, ensure_ascii=True)}",
                         session_id,
+                        run_metrics=self._run_metrics_from_control_state(
+                            control_state
+                        ),
                     )
                     roundtable_summary = (summary_result or {}).get(
                         "roundtable_summary", ""
