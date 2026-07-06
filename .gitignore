@@ -194,6 +194,7 @@ agents/.adk/
 
 # Agent CLI specific
 .persist_vector_store
+.newslens_runs/
 tests/load_test/.results/*.html
 tests/load_test/.results/*.csv
 .locust_env
