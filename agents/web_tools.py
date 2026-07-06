@@ -34,6 +34,34 @@ def is_transient_error(error: Exception) -> bool:
     return isinstance(error, (TimeoutError, ConnectionError, OSError))
 
 
+def extract_retry_delay_seconds(error: Exception) -> float | None:
+    """Read Google's suggested wait time out of a 429 error's RetryInfo detail.
+
+    Per-minute quota errors (e.g. low-tier models like Gemma) report exactly
+    how long until the quota window resets. A blind exponential backoff is
+    usually much shorter than that window, so retries just burn through
+    max_retries without ever landing after the reset; honoring the server's
+    own delay makes the retry actually useful.
+    """
+    details = getattr(error, "details", None)
+    if not isinstance(details, dict):
+        return None
+    error_details = details.get("error", {}).get("details", [])
+    if not isinstance(error_details, list):
+        return None
+    for item in error_details:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("@type", "")).endswith("RetryInfo"):
+            retry_delay = item.get("retryDelay")
+            if isinstance(retry_delay, str) and retry_delay.endswith("s"):
+                try:
+                    return float(retry_delay[:-1])
+                except ValueError:
+                    return None
+    return None
+
+
 def scrape_article_text(url: str, timeout: int = 10) -> str:
     """Fetches the HTML of the URL and extracts clean paragraph text.
 

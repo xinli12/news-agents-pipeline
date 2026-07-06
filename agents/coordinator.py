@@ -39,7 +39,7 @@ from agents.recruiter_agent import get_recruiter_agent
 from agents.report_renderer import render_public_editor_report
 from agents.schemas import AuditResult
 from agents.search_agent import get_search_agent
-from agents.web_tools import is_transient_error
+from agents.web_tools import extract_retry_delay_seconds, is_transient_error
 
 
 async def merge_generators(*generators) -> AsyncGenerator[Event, None]:
@@ -373,10 +373,10 @@ class NewsAnalysisCoordinator:
                     )
                     raise
                 if is_transient_error(e):
-                    backoff = 2**attempt
+                    backoff = extract_retry_delay_seconds(e) or 2**attempt
                     logger.warning(
                         "Agent '%s' hit a transient error (attempt %d/%d): %s. "
-                        "Retrying in %ds...",
+                        "Retrying in %.1fs...",
                         agent.name,
                         attempt,
                         max_retries,
@@ -593,43 +593,6 @@ class NewsAnalysisCoordinator:
             )
 
         out_result.append((output_data, False))
-
-    async def run_input_check(
-        self, topic: str, model_name: str = "gemini-3.1-flash-lite"
-    ) -> dict:
-        """Run the Input Check Agent synchronously to pre-audit user's input."""
-        os.environ["CURRENT_MODEL"] = model_name
-        session_id = f"input_check_sess_{uuid.uuid4().hex[:8]}"
-        session = await self.session_service.get_session(
-            app_name="news_app", user_id="user", session_id=session_id
-        )
-        if session is None:
-            session = await self.session_service.create_session(
-                app_name="news_app", user_id="user", session_id=session_id
-            )
-        ctx = InvocationContext(
-            invocation_id=f"e-{uuid.uuid4().hex[:8]}",
-            session_service=self.session_service,
-            session=session,
-            run_config=RunConfig(),
-        )
-        input_agent = get_input_check_agent(model_name)
-        prompt_text = f"Validate this input topic: '{topic}'"
-
-        res_list = []
-        async for event in self._run_agent(input_agent, prompt_text, ctx, res_list):
-            await self.session_service.append_event(session, event)
-
-        result = res_list[0] if res_list else None
-        if not result:
-            result = {
-                "action": "accept",
-                "is_news_related": True,
-                "explanation": "Failed to get input check result.",
-                "notification_message": None,
-                "converted_query": None,
-            }
-        return result
 
     async def analyze(
         self,
@@ -1209,7 +1172,6 @@ class NewsAnalysisCoordinator:
                 "expert_opinions": [],
                 "roundtable_summary": "No expert roundtable recruited.",
             }
-            expert_ok = True
 
             outlook_data = {
                 "most_likely_scenario": None,
@@ -1219,7 +1181,7 @@ class NewsAnalysisCoordinator:
             outlook_ok = True
 
             async def run_expert_agent() -> AsyncGenerator[Event, None]:
-                nonlocal expert_data, expert_ok
+                nonlocal expert_data
                 if not recruitment_result.get("recruit_expert", True):
                     return
                 await self._check_controls(control_state)
@@ -1262,7 +1224,6 @@ class NewsAnalysisCoordinator:
                 expert_statuses = []
 
                 async def run_one_expert(domain: str) -> AsyncGenerator[Event, None]:
-                    nonlocal expert_ok
                     expert_agent = get_domain_expert_agent(domain, model_name)
 
                     def expert_prompt_gen(f, s):
@@ -1313,8 +1274,6 @@ class NewsAnalysisCoordinator:
                     *(run_one_expert(domain) for domain in domains)
                 ):
                     yield event
-
-                expert_ok = all(expert_statuses)
 
                 # Step 3: moderator synthesizes the roundtable summary
                 roundtable_summary = ""

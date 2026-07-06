@@ -420,19 +420,6 @@ def _verify_narratives(
         _verify_evidence_list(evidence_items, path, article_index, issues)
 
 
-def _reference_citation_found(citation: str, reference_text_norm: str) -> bool:
-    citation_norm = _normalize_text(citation)
-    if not citation_norm:
-        return False
-    if citation_norm in reference_text_norm:
-        return True
-    content_words = [word for word in citation_norm.split() if len(word) > 3]
-    if not content_words:
-        return False
-    hits = sum(1 for word in content_words if word in reference_text_norm)
-    return hits / len(content_words) >= 0.6
-
-
 def _is_hyperlink(text: str) -> bool:
     t = text.lower()
     if t.startswith("http://") or t.startswith("https://"):

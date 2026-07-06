@@ -750,6 +750,35 @@ def test_is_transient_error_classifies_api_vs_content_failures() -> None:
     assert is_transient_error(KeyError("missing field")) is False
 
 
+def test_extract_retry_delay_seconds_reads_quota_reset_hint() -> None:
+    from google.genai import errors as genai_errors
+
+    from agents.web_tools import extract_retry_delay_seconds
+
+    quota_error = genai_errors.ClientError(
+        429,
+        {
+            "error": {
+                "code": 429,
+                "status": "RESOURCE_EXHAUSTED",
+                "details": [
+                    {"@type": "type.googleapis.com/google.rpc.QuotaFailure"},
+                    {
+                        "@type": "type.googleapis.com/google.rpc.RetryInfo",
+                        "retryDelay": "56.532059272s",
+                    },
+                ],
+            }
+        },
+    )
+    assert extract_retry_delay_seconds(quota_error) == 56.532059272
+
+    no_retry_info = genai_errors.ClientError(429, {"error": {"message": "rate limited"}})
+    assert extract_retry_delay_seconds(no_retry_info) is None
+
+    assert extract_retry_delay_seconds(ValueError("not an API error")) is None
+
+
 def test_run_agent_retries_immediately_and_injects_error_context() -> None:
     import asyncio
 
