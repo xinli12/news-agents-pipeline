@@ -5,6 +5,7 @@ import os
 import threading
 import time
 import uuid
+from urllib.parse import urlparse
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -30,6 +31,8 @@ from agents.coordinator import NewsAnalysisCoordinator
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+_RUN_STATE_LOCK = threading.RLock()
+_SUPERSEDED_RUN_IDS: set[str] = set()
 
 os.environ["NO_PROXY"] = "localhost,127.0.0.1"
 if os.getenv("GOOGLE_API_KEY") and not os.getenv("GEMINI_API_KEY"):
@@ -448,6 +451,32 @@ def clamp_score(value: float | int | None) -> float:
     return max(0.0, min(1.0, score))
 
 
+def safe_text(value) -> str:
+    return html.escape(str(value or ""), quote=True)
+
+
+def safe_url(value) -> str:
+    url = str(value or "").strip()
+    if not url or any(char.isspace() for char in url):
+        return ""
+
+    parsed = urlparse(url)
+    if parsed.scheme.lower() in {"http", "https"} and parsed.netloc:
+        return url
+    return ""
+
+
+def safe_markdown_link(label, url) -> str:
+    valid_url = safe_url(url)
+    safe_label = str(label or "Source")
+    safe_label = safe_label.replace("\\", "\\\\")
+    for char in ("[", "]", "(", ")"):
+        safe_label = safe_label.replace(char, f"\\{char}")
+    if not valid_url:
+        return safe_label
+    return f"[{safe_label}]({valid_url})"
+
+
 def join_or_dash(items: list[str] | None) -> str:
     return ", ".join(items or []) or "-"
 
@@ -490,9 +519,9 @@ def friendly_agent_name(name: str | None) -> str:
         "expert": "Expert Agent",
         "outlook_agent": "Future Outlook Agent",
         "outlook": "Future Outlook Agent",
-        "public_reporter_agent": "Public Reporter Agent",
-        "public_report": "Public Reporter Agent",
-        "public_editor": "Public Editor (deterministic renderer)",
+        "public_reporter_agent": "Briefing Writer",
+        "public_report": "Briefing Writer",
+        "public_editor": "Report Renderer",
     }
     key = str(name or "")
     if key.endswith("_audit"):
@@ -508,6 +537,68 @@ def approval_label(value: bool | None) -> str:
     return "Warning"
 
 
+def quality_review_summary(results: dict) -> dict:
+    logs = [log for log in results.get("editor_logs") or [] if isinstance(log, dict)]
+    warnings = [
+        warning
+        for warning in results.get("audit_warnings") or []
+        if isinstance(warning, dict)
+    ]
+    revision_stages = {
+        friendly_agent_name(log.get("agent") or log.get("step"))
+        for log in logs
+        if log.get("approved") is False
+    }
+    reports = deterministic_verification_reports(results)
+    verifier_review_count = sum(1 for _, report in reports if not report.get("passed", True))
+    verifier_issues = sum(int(report.get("issue_count") or 0) for _, report in reports)
+    final_report_ready = results.get("is_approved") is not False
+    has_review_notes = bool(
+        warnings
+        or revision_stages
+        or verifier_review_count
+        or results.get("is_approved") is False
+    )
+    return {
+        "logs": logs,
+        "warnings": warnings,
+        "audit_attempts": len(logs),
+        "unresolved_warnings": len(warnings),
+        "revision_stages": sorted(revision_stages),
+        "stages_needing_revision": len(revision_stages),
+        "reports": reports,
+        "verifier_checks": len(reports),
+        "verifier_review_count": verifier_review_count,
+        "verifier_issues": verifier_issues,
+        "final_report_ready": final_report_ready,
+        "has_review_notes": has_review_notes,
+    }
+
+
+def has_quality_review_notes(results: dict) -> bool:
+    return bool(quality_review_summary(results)["has_review_notes"])
+
+
+def quality_review_notice_text(results: dict) -> str:
+    summary = quality_review_summary(results)
+    if summary["verifier_review_count"]:
+        return (
+            "Some verification checks needed extra review, so caveats are available "
+            "under Quality checks."
+        )
+    if summary["unresolved_warnings"] or summary["stages_needing_revision"]:
+        return (
+            "This analysis includes a few review notes. You can view them under "
+            "Quality checks."
+        )
+    return "Some quality checks produced review notes. The report is shown with caveats."
+
+
+def render_quality_review_notice(results: dict) -> None:
+    if has_quality_review_notes(results):
+        st.info(quality_review_notice_text(results))
+
+
 def feedback_preview(text: str, limit: int = 120) -> str:
     clean = " ".join(str(text or "").split())
     if len(clean) <= limit:
@@ -518,17 +609,17 @@ def feedback_preview(text: str, limit: int = 120) -> str:
 def render_chips(items: list[tuple[str, str]]) -> None:
     chip_html = []
     for label, state in items:
-        safe_label = html.escape(str(label))
-        safe_state = html.escape(str(state))
-        chip_html.append(f'<span class="status-chip {safe_state}">{safe_label}</span>')
+        chip_html.append(
+            f'<span class="status-chip {safe_text(state)}">{safe_text(label)}</span>'
+        )
     st.markdown("".join(chip_html), unsafe_allow_html=True)
 
 
 def render_loading_card(title: str, body: str) -> None:
     st.markdown(
         '<div class="loading-card">'
-        f"<h3>{html.escape(title)}</h3>"
-        f"<p>{html.escape(body)}</p>"
+        f"<h3>{safe_text(title)}</h3>"
+        f"<p>{safe_text(body)}</p>"
         "</div>",
         unsafe_allow_html=True,
     )
@@ -598,9 +689,29 @@ def request_stop(state: dict) -> None:
     )
 
 
+def state_run_id(state: dict) -> str:
+    return str(state.get("run_id") or "")
+
+
+def is_superseded_state(state: dict) -> bool:
+    run_id = state_run_id(state)
+    return bool(state.get("superseded_by_run_id") or (run_id in _SUPERSEDED_RUN_IDS))
+
+
+def mark_state_superseded(state: dict, superseded_by_run_id: str) -> None:
+    if not isinstance(state, dict):
+        return
+    run_id = state_run_id(state)
+    if run_id:
+        _SUPERSEDED_RUN_IDS.add(run_id)
+    state["superseded_by_run_id"] = superseded_by_run_id
+
+
 def persist_run_snapshot(state: dict, context: str) -> None:
     try:
-        if isinstance(state, dict):
+        with _RUN_STATE_LOCK:
+            if not isinstance(state, dict) or is_superseded_state(state):
+                return
             save_run_snapshot(state)
     except Exception:
         logger.warning("Run snapshot save failed during %s", context, exc_info=True)
@@ -638,15 +749,17 @@ def render_primary_progress(state: dict) -> None:
 
     with st.container(border=True):
         st.markdown(
-            f'<div class="status-indicator {html.escape(status_class)}">'
-            f"<div><strong>{html.escape(title)}</strong><br>"
-            f"<span>{html.escape(detail)}</span></div></div>",
+            f'<div class="status-indicator {safe_text(status_class)}">'
+            f"<div><strong>{safe_text(title)}</strong><br>"
+            f"<span>{safe_text(detail)}</span></div></div>",
             unsafe_allow_html=True,
         )
+        if state.get("topic"):
+            st.caption(f"Current topic: {state.get('topic')}")
         st.progress(progress)
         st.markdown(
             f'<div class="progress-caption">{int(progress * 100)}% complete · '
-            f"Current step: {html.escape(active_step_label(step_statuses, detail))}</div>",
+            f"Current step: {safe_text(active_step_label(step_statuses, detail))}</div>",
             unsafe_allow_html=True,
         )
 
@@ -769,15 +882,20 @@ def render_evidence_items(
     for item in evidence[:max_items]:
         source = item.get("source") or "Unknown source"
         title = item.get("title") or ""
-        url = item.get("url") or ""
+        url = safe_url(item.get("url"))
         published = item.get("published_date") or ""
         bias = (item.get("bias_category") or "") if show_bias else ""
         quote = item.get("quote") or ""
         meta = " | ".join(part for part in [published, bias] if part)
-        link = f'<a href="{url}" target="_blank">{source}</a>' if url else source
+        link = (
+            f'<a href="{safe_text(url)}" target="_blank" '
+            f'rel="noopener noreferrer">{safe_text(source)}</a>'
+            if url
+            else safe_text(source)
+        )
         st.markdown(
             f'<div class="source-line">{link}<br>'
-            f'<span class="small-muted">{title} {meta}</span></div>',
+            f'<span class="small-muted">{safe_text(title)} {safe_text(meta)}</span></div>',
             unsafe_allow_html=True,
         )
         if quote:
@@ -902,7 +1020,7 @@ def render_source_table(articles: list[dict]) -> None:
         else:
             badge_class = "badge-other"
 
-        summary = article.get("summary", "")
+        summary = str(article.get("summary", "") or "")
 
         if len(summary) > 120:
             truncated = summary[:120]
@@ -914,22 +1032,30 @@ def render_source_table(articles: list[dict]) -> None:
             summary_html = (
                 f"<div class='expandable-text'>"
                 f"<input type='checkbox' id='toggle-{idx}' class='toggle-checkbox' style='display: none;'>"
-                f"<span class='truncated-text'>{truncated}...</span>"
-                f"<span class='full-text'>{truncated}{remaining}</span>"
+                f"<span class='truncated-text'>{safe_text(truncated)}...</span>"
+                f"<span class='full-text'>{safe_text(truncated)}{safe_text(remaining)}</span>"
                 f"<label for='toggle-{idx}' class='toggle-label'></label>"
                 f"</div>"
             )
         else:
-            summary_html = summary
+            summary_html = safe_text(summary)
 
-        title_html = f"<a href='{url}' target='_blank' style='text-decoration: none; color: inherit; font-weight: 500;'>{title}</a>" if url else title
+        valid_url = safe_url(url)
+        title_html = (
+            f"<a href='{safe_text(valid_url)}' target='_blank' "
+            "rel='noopener noreferrer' "
+            "style='text-decoration: none; color: inherit; font-weight: 500;'>"
+            f"{safe_text(title)}</a>"
+            if valid_url
+            else safe_text(title)
+        )
 
         html_lines.append(
             f"<tr>"
-            f"<td>{publisher}</td>"
+            f"<td>{safe_text(publisher)}</td>"
             f"<td>{title_html}</td>"
-            f"<td><span class='badge {badge_class}'>{perspective}</span></td>"
-            f"<td><span class='{neut_class}'>{neutrality}</span></td>"
+            f"<td><span class='badge {badge_class}'>{safe_text(perspective)}</span></td>"
+            f"<td><span class='{neut_class}'>{safe_text(neutrality)}</span></td>"
             f"<td>{summary_html}</td>"
             f"</tr>"
         )
@@ -985,14 +1111,10 @@ def render_landscape(articles_data: dict) -> None:
 
 def render_public_summary(results: dict) -> None:
     public_report = results.get("public_report") or {}
-    audit_warnings = results.get("audit_warnings") or []
     articles_data = results.get("articles") or {}
     recruitment = results.get("recruitment") or {}
 
-    if audit_warnings:
-        st.warning(
-            "Some audit checks did not fully pass. The report is shown with unresolved caveats."
-        )
+    render_quality_review_notice(results)
 
     with st.container(border=True):
         st.markdown(f"## {public_report.get('title', 'News briefing')}")
@@ -1008,9 +1130,9 @@ def render_public_summary(results: dict) -> None:
                     links = []
                     for item in takeaway.get("evidence") or []:
                         source = item.get("source") or "Source"
-                        url = item.get("url") or ""
-                        if url:
-                            links.append(f"[{source}]({url})")
+                        link = safe_markdown_link(source, item.get("url"))
+                        if link:
+                            links.append(link)
                     if links:
                         st.caption("Sources: " + " · ".join(links))
                 else:
@@ -1039,7 +1161,7 @@ def render_public_summary(results: dict) -> None:
     editor_report = results.get("public_editor_report")
     if editor_report:
         with st.expander("Full public editor report", expanded=False):
-            st.markdown(editor_report, unsafe_allow_html=True)
+            st.markdown(editor_report)
 
 
 def render_consensus_and_timeline(facts: dict) -> None:
@@ -1646,11 +1768,7 @@ def render_expert_outlook_section(
 
 def render_briefing_column(results: dict, status: str) -> None:
     st.markdown("## Briefing")
-    audit_warnings = results.get("audit_warnings") or []
-    if audit_warnings:
-        st.warning(
-            "Some audit checks did not fully pass. The briefing is shown with unresolved caveats."
-        )
+    render_quality_review_notice(results)
 
     public_report = results.get("public_report") or {}
     title = public_report.get("title") or "News briefing"
@@ -1677,9 +1795,9 @@ def render_briefing_column(results: dict, status: str) -> None:
                 links = []
                 for item in takeaway.get("evidence") or []:
                     source = item.get("source") or "Source"
-                    url = item.get("url") or ""
-                    if url:
-                        links.append(f"[{source}]({url})")
+                    link = safe_markdown_link(source, item.get("url"))
+                    if link:
+                        links.append(link)
                 if links:
                     st.caption("Sources: " + " · ".join(links))
             else:
@@ -1769,13 +1887,121 @@ def render_run_metrics(metrics: dict) -> None:
         st.caption("Step duration data is not available yet.")
 
 
+def deterministic_verification_reports(results: dict) -> list[tuple[dict, dict]]:
+    reports = []
+    for log in results.get("editor_logs") or []:
+        if not isinstance(log, dict):
+            continue
+        report = log.get("deterministic_verification")
+        if isinstance(report, dict):
+            reports.append((log, report))
+    return reports
+
+
+def render_compact_trust_summary(results: dict) -> None:
+    summary = quality_review_summary(results)
+    logs = summary["logs"]
+    warnings = summary["warnings"]
+    reports = summary["reports"]
+
+    st.markdown("### Quality checks")
+    trust_cols = st.columns(5)
+    trust_cols[0].metric("Audit attempts", summary["audit_attempts"])
+    trust_cols[1].metric("Review notes", summary["unresolved_warnings"])
+    trust_cols[2].metric("Stages revised", summary["stages_needing_revision"])
+    trust_cols[3].metric(
+        "Report status", "Ready" if summary["final_report_ready"] else "Caveats"
+    )
+    trust_cols[4].metric("Verifier checks", summary["verifier_checks"])
+
+    if summary["has_review_notes"]:
+        st.info(quality_review_notice_text(results))
+    elif logs:
+        st.success("Quality checks completed.")
+    else:
+        st.caption("Quality checks will appear after agent stages complete.")
+
+    if reports:
+        st.markdown("#### Verification checks")
+        for log, report in reports[-4:]:
+            agent_label = friendly_agent_name(log.get("agent") or log.get("step"))
+            status = "completed" if report.get("passed") else "needs attention"
+            checked_count = report.get("checked_article_count", 0)
+            issue_count = report.get("issue_count", 0)
+            st.caption(
+                f"{agent_label}: {status}; {issue_count} review note(s); "
+                f"{checked_count} cited article(s) checked. {report.get('summary', '')}"
+            )
+        if summary["verifier_review_count"]:
+            st.info(
+                f"{summary['verifier_review_count']} verification check(s) "
+                "needed extra review."
+            )
+    else:
+        st.caption("Verification summaries appear after evidence-bearing stages run.")
+
+    if not (warnings or logs):
+        return
+
+    show_details = st.checkbox(
+        "Show detailed review notes",
+        value=False,
+        key=f"show_detailed_review_notes_{state_run_id(st.session_state.get('shared_state') or {})}",
+    )
+    if not show_details:
+        return
+
+    if warnings:
+        st.markdown("#### Review notes needing attention")
+        for warning in warnings:
+            agent_label = friendly_agent_name(warning.get("agent") or warning.get("step"))
+            st.info(f"{agent_label}: {warning.get('feedback', 'Review recommended.')}")
+            fixes = warning.get("recommended_fixes") or []
+            if fixes:
+                st.markdown("Suggested follow-up:")
+                for fix in fixes:
+                    st.write(fix)
+
+    if logs:
+        import pandas as pd
+
+        rows = [
+            {
+                "Stage": friendly_agent_name(log.get("step") or log.get("agent")),
+                "Attempt": log.get("attempt", ""),
+                "Result": approval_label(log.get("approved")),
+                "Review note": feedback_preview(log.get("feedback", "")),
+            }
+            for log in logs
+        ]
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+        st.markdown("#### Detailed feedback")
+        for log in logs:
+            feedback = log.get("feedback") or ""
+            feedback_items = log.get("audit_feedback") or []
+            fixes = log.get("recommended_fixes") or []
+            if not (feedback or feedback_items or fixes):
+                continue
+            agent_label = friendly_agent_name(log.get("agent") or log.get("step"))
+            st.markdown(f"**{agent_label} attempt {log.get('attempt', '')}**")
+            if feedback:
+                st.write(feedback)
+            for item in feedback_items:
+                st.write(item)
+            if fixes:
+                st.markdown("Suggested follow-up:")
+                for fix in fixes:
+                    st.write(fix)
+
+
 def render_diagnostics(results: dict, state: dict) -> None:
     audit_count = len(results.get("audit_warnings") or []) + len(
         results.get("editor_logs") or []
     )
-    diagnostics_label = "Diagnostics"
+    diagnostics_label = "Why trust this analysis?"
     if audit_count:
-        diagnostics_label = f"Diagnostics ({audit_count} audit items)"
+        diagnostics_label = f"Why trust this analysis? ({audit_count} review note(s))"
 
     with st.expander(diagnostics_label, expanded=False):
         diag_cols = st.columns(3)
@@ -1788,6 +2014,14 @@ def render_diagnostics(results: dict, state: dict) -> None:
                 f" | saved_at: {state.get('snapshot_saved_at') or 'unknown'}"
                 f" | interrupted: {bool(state.get('snapshot_interrupted'))}"
             )
+        if st.button(
+            "Clear saved runs",
+            key="clear_saved_runs_diagnostics",
+            help="Remove local display snapshots from this machine. This does not stop or delete the current in-memory run.",
+        ):
+            clear_saved_runs()
+            st.session_state["skip_snapshot_restore"] = True
+            st.success("Saved run snapshots cleared.")
 
         metrics = state.get("run_metrics") or results.get("run_metrics") or {}
         if metrics:
@@ -1804,12 +2038,7 @@ def render_diagnostics(results: dict, state: dict) -> None:
                 logger.warning("Run metrics rendering failed", exc_info=True)
                 st.caption("Run metrics are unavailable for this run.")
 
-        recruitment = results.get("recruitment") or {}
-        if recruitment:
-            render_recruitment(recruitment)
-            st.divider()
-
-        render_audit_trail(results)
+        render_compact_trust_summary(results)
 
 
 def worker_thread_fn(
@@ -1930,10 +2159,25 @@ def render_progress_stepper(step_statuses: dict):
         elif status == "stopping":
             badge = "!"
 
+        safe_status = safe_text(
+            status
+            if status
+            in {
+                "completed",
+                "running",
+                "paused",
+                "skipped",
+                "failed",
+                "stopped",
+                "stopping",
+                "queued",
+            }
+            else "queued"
+        )
         html.append(
-            f'<div class="step-card {status}">'
-            f'<span class="step-badge">{badge}</span>'
-            f'<span class="step-label">{label}</span>'
+            f'<div class="step-card {safe_status}">'
+            f'<span class="step-badge">{safe_text(badge)}</span>'
+            f'<span class="step-label">{safe_text(label)}</span>'
             f"</div>"
         )
         if idx < len(PIPELINE_STEPS) - 1:
@@ -1989,25 +2233,17 @@ with st.expander("Settings", expanded=False):
         )
 
 
-def start_workflow(
+def build_initial_shared_state(
     topic_query: str,
     model_name: str,
-    enable_editor_flag: bool,
-    bypass_input_check: bool = False,
-):
-    previous_state = st.session_state.get("shared_state") or {}
-    if previous_state.get("status") in ACTIVE_RUN_STATUSES:
-        previous_state.setdefault("control", {})["stopped"] = True
-        previous_state.setdefault("control", {})["paused"] = False
-        persist_run_snapshot(previous_state, "previous run stopped")
-
-    start_timestamp = time.time()
+    start_timestamp: float,
+) -> dict:
     run_id = (
         f"{time.strftime('%Y%m%d-%H%M%S', time.gmtime(start_timestamp))}-"
         f"{uuid.uuid4().hex[:8]}"
     )
     run_metrics = create_run_metrics(model_name, start_timestamp=start_timestamp)
-    shared_state = {
+    return {
         "run_id": run_id,
         "status": "running",
         "topic": topic_query,
@@ -2054,10 +2290,33 @@ def start_workflow(
         "model_name": model_name,
         "run_metrics": run_metrics,
     }
-    st.session_state["shared_state"] = shared_state
-    st.session_state.pop("chat_messages", None)
-    st.session_state["skip_snapshot_restore"] = False
-    persist_run_snapshot(shared_state, "workflow start")
+
+
+def start_workflow(
+    topic_query: str,
+    model_name: str,
+    enable_editor_flag: bool,
+    bypass_input_check: bool = False,
+):
+    shared_state = build_initial_shared_state(
+        topic_query,
+        model_name,
+        start_timestamp=time.time(),
+    )
+
+    with _RUN_STATE_LOCK:
+        previous_state = st.session_state.get("shared_state") or {}
+        if isinstance(previous_state, dict) and previous_state:
+            mark_state_superseded(previous_state, shared_state["run_id"])
+            if previous_state.get("status") in ACTIVE_RUN_STATUSES:
+                previous_state.setdefault("control", {})["stopped"] = True
+                previous_state.setdefault("control", {})["paused"] = False
+                previous_state["status"] = "stopping"
+
+        st.session_state["shared_state"] = shared_state
+        st.session_state.pop("chat_messages", None)
+        st.session_state["skip_snapshot_restore"] = False
+        persist_run_snapshot(shared_state, "workflow start")
 
     # Spawn worker thread
     thread = threading.Thread(
@@ -2080,10 +2339,10 @@ def render_restore_panel(snapshot: dict) -> None:
     status = snapshot.get("status") or "unknown"
 
     with st.container(border=True):
-        st.markdown("### Restore latest analysis")
+        st.markdown("### Restored previous snapshot available")
         st.caption(
-            "A saved display snapshot is available locally. Restoring it will not "
-            "resume backend execution."
+            "This is from an earlier run and is not part of the current analysis. "
+            "Restoring it will not resume backend execution."
         )
         snapshot_cols = st.columns(3)
         snapshot_cols[0].metric("Topic", topic)
@@ -2092,7 +2351,7 @@ def render_restore_panel(snapshot: dict) -> None:
 
         action_cols = st.columns(2)
         if action_cols[0].button(
-            "Restore latest analysis",
+            "Restore previous snapshot",
             type="primary",
             use_container_width=True,
         ):
@@ -2127,7 +2386,6 @@ if submit:
             enable_editor,
             bypass_input_check=False,
         )
-        st.rerun()
 
 
 # --- Display Content Area ---
@@ -2154,7 +2412,8 @@ step_statuses = state.get("step_statuses") or {}
 
 if state.get("restored_snapshot"):
     st.info(
-        "Restored saved snapshot. Backend execution is not running."
+        "Restored previous snapshot. This is from an earlier run and is not part "
+        "of the current analysis. Backend execution is not running."
         + (
             " The saved run was interrupted after refresh."
             if state.get("snapshot_interrupted")
@@ -2163,6 +2422,7 @@ if state.get("restored_snapshot"):
     )
 
 render_primary_progress(state)
+render_diagnostics(results, state)
 
 # Check for immediate exits (Input Rejection or early search failures)
 if results.get("input_checked") is False:
@@ -2192,7 +2452,7 @@ with st.sidebar:
     if status == "running":
         st.markdown(
             f'<div class="status-indicator running">⚙️ Pipeline Running:<br>'
-            f"<strong>{state.get('current_step', 'Processing')}</strong></div>",
+            f"<strong>{safe_text(state.get('current_step', 'Processing'))}</strong></div>",
             unsafe_allow_html=True,
         )
     elif status == "paused":
@@ -2217,7 +2477,7 @@ with st.sidebar:
         )
     elif status == "failed":
         st.markdown(
-            f'<div class="status-indicator failed">❌ Pipeline Failed: {state.get("error")}</div>',
+            f'<div class="status-indicator failed">❌ Pipeline Failed: {safe_text(state.get("error"))}</div>',
             unsafe_allow_html=True,
         )
 

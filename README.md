@@ -12,11 +12,11 @@ The project is intended for learning and experimentation only, not commercial us
 | Live search | Uses DuckDuckGo via `ddgs`, falls back from news search to text search, and builds a candidate pool of up to 40 raw results. |
 | Deduplication | Removes duplicate URLs and collapses likely wire-service or reprint clusters before analysis. |
 | Article enrichment | Scrapes selected articles with Jina Reader first, then BeautifulSoup/lxml as a fallback. |
-| Source analysis | Classifies article-level bias/framing, source reliability, media scale, and objectivity. |
+| Source analysis | Classifies article-level bias/framing and tone neutrality, and preserves source-balance metadata. |
 | Modular agents | Recruits dispute, perspective, expert, and future-outlook agents only when the topic appears to need them. |
 | Dynamic expert panel | The Expert Agent selects 2-3 relevant professional domains at runtime, then spawns exactly that many domain-expert agents in parallel and synthesizes a roundtable summary. |
 | Audit loop | Runs per-stage audit agents with bounded revision cycles (tiered by risk) and surfaces unresolved warnings. |
-| Public output | Produces a concise public report, a folded dashboard report assembled by a deterministic renderer (no LLM call), a 7-tab Streamlit dashboard, and optional follow-up Q&A. |
+| Public output | Produces a concise public report, a folded dashboard report assembled by a deterministic renderer (no LLM call), and a Streamlit dashboard with Analysis Details, Briefing, and collapsed trust diagnostics. |
 
 ## Architecture
 
@@ -79,15 +79,14 @@ hackathon/
 │   ├── outlook_agent.py          # Future scenarios and monitoring indicators
 │   ├── public_reporter_agent.py  # Public-facing summary
 │   ├── report_renderer.py        # Deterministic folded Markdown report (no LLM call)
-│   ├── qa_agent.py               # Follow-up Q&A for completed reports
 │   ├── evidence_verifier.py      # Deterministic evidence/citation checks
 │   ├── schemas.py                # Pydantic output contracts
-│   └── app_utils/                # Telemetry and API typing helpers
+│   └── app_utils/                # Runtime metrics, local snapshots, telemetry, API typing
 ├── tests/
 │   ├── unit/                     # Schema and helper tests
 │   ├── integration/              # ADK agent and FastAPI server tests
 │   └── eval/                     # Evaluation configs and sample datasets
-├── app.py                        # Streamlit dashboard with 7 tabs
+├── app.py                        # Streamlit dashboard with analysis tabs, briefing, and diagnostics
 ├── main.py                       # Rich CLI entrypoint
 ├── Dockerfile                    # FastAPI/ADK container entrypoint
 ├── agents-cli-manifest.yaml      # Agents CLI project metadata
@@ -139,19 +138,18 @@ uv tool install google-agents-cli
 agents-cli playground
 ```
 
-## Streamlit Tabs
+## Streamlit Dashboard
 
-The dashboard renders these 7 tabs:
+The current dashboard uses a two-column demo layout:
 
-| Tab | Content |
+| Area | Content |
 | --- | --- |
-| Briefing | Public summary, key takeaways, folded editor report, and recruitment decision. |
-| Sources | Search verification, source balance, reliability/objectivity scores, and article catalog. |
-| Facts & Timeline | Consensus facts, evidence trails, and chronological events. |
-| Perspectives & Disputes | Contested claims and narrative/perspective profiles. |
-| Expert & Outlook | Expert roundtable output and future scenarios. |
-| Audit Trail | Per-agent approval/rejection logs and unresolved warnings. |
-| Q&A | Follow-up chat grounded in the completed report context. |
+| Analysis details | Three tabs: Sources; Facts, Disputes & Perspectives; Expert & Outlook. |
+| Briefing | Public summary, TL;DR, key takeaways, narrative synthesis, and next-watch items. |
+| Workflow sidebar | Progress stepper, pause/resume/stop controls, and execution logs. |
+| Why trust this analysis? | Collapsed diagnostics with run metrics, audit summary, evidence-verifier summaries, restored snapshot metadata, and a clear-saved-runs control. |
+
+The previous Q&A surface has been removed. Local display snapshots are saved under `.newslens_runs/` by default so a browser refresh can restore the latest completed or interrupted analysis without resuming backend execution.
 
 ## Test And Lint
 
@@ -170,7 +168,7 @@ agents-cli eval grade --config tests/eval/eval_config.yaml
 ## Configuration
 
 - `GEMINI_API_KEY` or `GOOGLE_API_KEY`: required for live agent runs.
-- `CURRENT_MODEL`: set internally by the coordinator from the selected model; defaults to `gemini-3.1-flash-lite`.
+- `CURRENT_MODEL`: set internally by the coordinator from the selected model. The Streamlit selector currently defaults to Gemma 4; non-UI coordinator calls fall back to `gemini-3.1-flash-lite` unless a caller passes a model.
 - `LOGS_BUCKET_NAME`: optional GCS bucket for ADK artifact/telemetry paths in deployed environments.
 - `ALLOW_ORIGINS`: optional comma-separated CORS allowlist for the FastAPI app.
 
