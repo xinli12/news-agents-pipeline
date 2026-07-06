@@ -40,9 +40,10 @@ class WorkflowStoppedException(Exception):
 # --- Audit Criteria Definitions ---
 INPUT_AUDIT_CRITERIA = (
     "1. The action must be exactly one of: 'accept', 'accept_with_notification', 'reject_with_confirmation', 'convert'.\n"
-    "2. If the input contains a URL or copy-pasted article, the action must be 'convert'.\n"
-    "3. If action is 'convert', check if the URL/article is news-related. If it is, converted_query must be populated. If it is not, the action must be 'reject_with_confirmation'.\n"
-    "4. If action is 'accept_with_notification' or 'reject_with_confirmation', notification_message must be populated."
+    "2. If the input does not contain a URL or a copy-pasted article or paragraph, the action must not be convert, and converted_query must be null.\n"
+    "3. If the input contains a URL or copy-pasted article, the action must be 'convert'.\n"
+    "4. If action is 'convert', check if the URL/article is news-related. If it is, converted_query must be populated. If it is not, the action must be 'reject_with_confirmation'.\n"
+    "5. If action is 'accept_with_notification' or 'reject_with_confirmation', notification_message must be populated."
 )
 
 
