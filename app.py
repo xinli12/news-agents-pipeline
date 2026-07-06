@@ -2298,7 +2298,7 @@ with st.expander("Settings", expanded=False):
                 "Gemini 3.1 Flash Lite (Low-Cost)",
                 "Gemini 3.1 Pro Preview (Premium)",
             ],
-            index=0,
+            index=1,
             help="Select the underlying AI model for the agents.",
         )
         MODEL_MAPPING = {
