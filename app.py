@@ -519,9 +519,9 @@ def friendly_agent_name(name: str | None) -> str:
         "expert": "Expert Agent",
         "outlook_agent": "Future Outlook Agent",
         "outlook": "Future Outlook Agent",
-        "public_reporter_agent": "Public Reporter Agent",
-        "public_report": "Public Reporter Agent",
-        "public_editor": "Public Editor (deterministic renderer)",
+        "public_reporter_agent": "Briefing Writer",
+        "public_report": "Briefing Writer",
+        "public_editor": "Report Renderer",
     }
     key = str(name or "")
     if key.endswith("_audit"):
@@ -535,6 +535,68 @@ def approval_label(value: bool | None) -> str:
     if value is False:
         return "Needs revision"
     return "Warning"
+
+
+def quality_review_summary(results: dict) -> dict:
+    logs = [log for log in results.get("editor_logs") or [] if isinstance(log, dict)]
+    warnings = [
+        warning
+        for warning in results.get("audit_warnings") or []
+        if isinstance(warning, dict)
+    ]
+    revision_stages = {
+        friendly_agent_name(log.get("agent") or log.get("step"))
+        for log in logs
+        if log.get("approved") is False
+    }
+    reports = deterministic_verification_reports(results)
+    verifier_review_count = sum(1 for _, report in reports if not report.get("passed", True))
+    verifier_issues = sum(int(report.get("issue_count") or 0) for _, report in reports)
+    final_report_ready = results.get("is_approved") is not False
+    has_review_notes = bool(
+        warnings
+        or revision_stages
+        or verifier_review_count
+        or results.get("is_approved") is False
+    )
+    return {
+        "logs": logs,
+        "warnings": warnings,
+        "audit_attempts": len(logs),
+        "unresolved_warnings": len(warnings),
+        "revision_stages": sorted(revision_stages),
+        "stages_needing_revision": len(revision_stages),
+        "reports": reports,
+        "verifier_checks": len(reports),
+        "verifier_review_count": verifier_review_count,
+        "verifier_issues": verifier_issues,
+        "final_report_ready": final_report_ready,
+        "has_review_notes": has_review_notes,
+    }
+
+
+def has_quality_review_notes(results: dict) -> bool:
+    return bool(quality_review_summary(results)["has_review_notes"])
+
+
+def quality_review_notice_text(results: dict) -> str:
+    summary = quality_review_summary(results)
+    if summary["verifier_review_count"]:
+        return (
+            "Some verification checks needed extra review, so caveats are available "
+            "under Quality checks."
+        )
+    if summary["unresolved_warnings"] or summary["stages_needing_revision"]:
+        return (
+            "This analysis includes a few review notes. You can view them under "
+            "Quality checks."
+        )
+    return "Some quality checks produced review notes. The report is shown with caveats."
+
+
+def render_quality_review_notice(results: dict) -> None:
+    if has_quality_review_notes(results):
+        st.info(quality_review_notice_text(results))
 
 
 def feedback_preview(text: str, limit: int = 120) -> str:
@@ -692,6 +754,8 @@ def render_primary_progress(state: dict) -> None:
             f"<span>{safe_text(detail)}</span></div></div>",
             unsafe_allow_html=True,
         )
+        if state.get("topic"):
+            st.caption(f"Current topic: {state.get('topic')}")
         st.progress(progress)
         st.markdown(
             f'<div class="progress-caption">{int(progress * 100)}% complete · '
@@ -1047,14 +1111,10 @@ def render_landscape(articles_data: dict) -> None:
 
 def render_public_summary(results: dict) -> None:
     public_report = results.get("public_report") or {}
-    audit_warnings = results.get("audit_warnings") or []
     articles_data = results.get("articles") or {}
     recruitment = results.get("recruitment") or {}
 
-    if audit_warnings:
-        st.warning(
-            "Some audit checks did not fully pass. The report is shown with unresolved caveats."
-        )
+    render_quality_review_notice(results)
 
     with st.container(border=True):
         st.markdown(f"## {public_report.get('title', 'News briefing')}")
@@ -1708,11 +1768,7 @@ def render_expert_outlook_section(
 
 def render_briefing_column(results: dict, status: str) -> None:
     st.markdown("## Briefing")
-    audit_warnings = results.get("audit_warnings") or []
-    if audit_warnings:
-        st.warning(
-            "Some audit checks did not fully pass. The briefing is shown with unresolved caveats."
-        )
+    render_quality_review_notice(results)
 
     public_report = results.get("public_report") or {}
     title = public_report.get("title") or "News briefing"
@@ -1843,55 +1899,100 @@ def deterministic_verification_reports(results: dict) -> list[tuple[dict, dict]]
 
 
 def render_compact_trust_summary(results: dict) -> None:
-    logs = [log for log in results.get("editor_logs") or [] if isinstance(log, dict)]
-    warnings = [
-        warning
-        for warning in results.get("audit_warnings") or []
-        if isinstance(warning, dict)
-    ]
-    approved = sum(1 for log in logs if log.get("approved") is True)
-    rejected = sum(1 for log in logs if log.get("approved") is False)
-    reports = deterministic_verification_reports(results)
-    verifier_issues = sum(int(report.get("issue_count") or 0) for _, report in reports)
-    verifier_blocking = sum(1 for _, report in reports if not report.get("passed", True))
+    summary = quality_review_summary(results)
+    logs = summary["logs"]
+    warnings = summary["warnings"]
+    reports = summary["reports"]
 
-    st.markdown("### Trust checks")
+    st.markdown("### Quality checks")
     trust_cols = st.columns(5)
-    trust_cols[0].metric("Audit attempts", len(logs))
-    trust_cols[1].metric("Approved", approved)
-    trust_cols[2].metric("Needs review", rejected + len(warnings))
-    trust_cols[3].metric("Verifier checks", len(reports))
-    trust_cols[4].metric("Verifier issues", verifier_issues)
+    trust_cols[0].metric("Audit attempts", summary["audit_attempts"])
+    trust_cols[1].metric("Review notes", summary["unresolved_warnings"])
+    trust_cols[2].metric("Stages revised", summary["stages_needing_revision"])
+    trust_cols[3].metric(
+        "Report status", "Ready" if summary["final_report_ready"] else "Caveats"
+    )
+    trust_cols[4].metric("Verifier checks", summary["verifier_checks"])
 
-    if warnings:
-        st.markdown("#### Unresolved audit warnings")
-        for warning in warnings[:3]:
-            agent_label = friendly_agent_name(warning.get("agent") or warning.get("step"))
-            st.warning(f"{agent_label}: {warning.get('feedback', 'Review recommended.')}")
-        if len(warnings) > 3:
-            st.caption(f"{len(warnings) - 3} more warning(s) recorded.")
+    if summary["has_review_notes"]:
+        st.info(quality_review_notice_text(results))
     elif logs:
-        st.success("No unresolved audit warnings recorded for this run.")
+        st.success("Quality checks completed.")
     else:
-        st.caption("Audit results will appear after agent stages complete.")
+        st.caption("Quality checks will appear after agent stages complete.")
 
     if reports:
-        st.markdown("#### Evidence verifier")
+        st.markdown("#### Verification checks")
         for log, report in reports[-4:]:
             agent_label = friendly_agent_name(log.get("agent") or log.get("step"))
-            status = "passed" if report.get("passed") else "needs review"
+            status = "completed" if report.get("passed") else "needs attention"
             checked_count = report.get("checked_article_count", 0)
             issue_count = report.get("issue_count", 0)
             st.caption(
-                f"{agent_label}: {status}; {issue_count} issue(s); "
+                f"{agent_label}: {status}; {issue_count} review note(s); "
                 f"{checked_count} cited article(s) checked. {report.get('summary', '')}"
             )
-        if verifier_blocking:
-            st.warning(
-                f"{verifier_blocking} deterministic verifier check(s) found blocking issues."
+        if summary["verifier_review_count"]:
+            st.info(
+                f"{summary['verifier_review_count']} verification check(s) "
+                "needed extra review."
             )
     else:
-        st.caption("Evidence verifier summaries appear after evidence-bearing stages run.")
+        st.caption("Verification summaries appear after evidence-bearing stages run.")
+
+    if not (warnings or logs):
+        return
+
+    show_details = st.checkbox(
+        "Show detailed review notes",
+        value=False,
+        key=f"show_detailed_review_notes_{state_run_id(st.session_state.get('shared_state') or {})}",
+    )
+    if not show_details:
+        return
+
+    if warnings:
+        st.markdown("#### Review notes needing attention")
+        for warning in warnings:
+            agent_label = friendly_agent_name(warning.get("agent") or warning.get("step"))
+            st.info(f"{agent_label}: {warning.get('feedback', 'Review recommended.')}")
+            fixes = warning.get("recommended_fixes") or []
+            if fixes:
+                st.markdown("Suggested follow-up:")
+                for fix in fixes:
+                    st.write(fix)
+
+    if logs:
+        import pandas as pd
+
+        rows = [
+            {
+                "Stage": friendly_agent_name(log.get("step") or log.get("agent")),
+                "Attempt": log.get("attempt", ""),
+                "Result": approval_label(log.get("approved")),
+                "Review note": feedback_preview(log.get("feedback", "")),
+            }
+            for log in logs
+        ]
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+        st.markdown("#### Detailed feedback")
+        for log in logs:
+            feedback = log.get("feedback") or ""
+            feedback_items = log.get("audit_feedback") or []
+            fixes = log.get("recommended_fixes") or []
+            if not (feedback or feedback_items or fixes):
+                continue
+            agent_label = friendly_agent_name(log.get("agent") or log.get("step"))
+            st.markdown(f"**{agent_label} attempt {log.get('attempt', '')}**")
+            if feedback:
+                st.write(feedback)
+            for item in feedback_items:
+                st.write(item)
+            if fixes:
+                st.markdown("Suggested follow-up:")
+                for fix in fixes:
+                    st.write(fix)
 
 
 def render_diagnostics(results: dict, state: dict) -> None:
@@ -1900,7 +2001,7 @@ def render_diagnostics(results: dict, state: dict) -> None:
     )
     diagnostics_label = "Why trust this analysis?"
     if audit_count:
-        diagnostics_label = f"Why trust this analysis? ({audit_count} audit items)"
+        diagnostics_label = f"Why trust this analysis? ({audit_count} review note(s))"
 
     with st.expander(diagnostics_label, expanded=False):
         diag_cols = st.columns(3)
@@ -2238,10 +2339,10 @@ def render_restore_panel(snapshot: dict) -> None:
     status = snapshot.get("status") or "unknown"
 
     with st.container(border=True):
-        st.markdown("### Restore latest analysis")
+        st.markdown("### Restored previous snapshot available")
         st.caption(
-            "A saved display snapshot is available locally. Restoring it will not "
-            "resume backend execution."
+            "This is from an earlier run and is not part of the current analysis. "
+            "Restoring it will not resume backend execution."
         )
         snapshot_cols = st.columns(3)
         snapshot_cols[0].metric("Topic", topic)
@@ -2250,7 +2351,7 @@ def render_restore_panel(snapshot: dict) -> None:
 
         action_cols = st.columns(2)
         if action_cols[0].button(
-            "Restore latest analysis",
+            "Restore previous snapshot",
             type="primary",
             use_container_width=True,
         ):
@@ -2311,7 +2412,8 @@ step_statuses = state.get("step_statuses") or {}
 
 if state.get("restored_snapshot"):
     st.info(
-        "Restored saved snapshot. Backend execution is not running."
+        "Restored previous snapshot. This is from an earlier run and is not part "
+        "of the current analysis. Backend execution is not running."
         + (
             " The saved run was interrupted after refresh."
             if state.get("snapshot_interrupted")
