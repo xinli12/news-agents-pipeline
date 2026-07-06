@@ -2119,7 +2119,6 @@ if results.get("input_checked") is False:
     st.error("Input check rejected this request.")
     input_check = results.get("input_check_result") or {}
     render_input_check(input_check)
-    render_diagnostics(results, state)
     st.stop()
 
 if results.get("search_failed"):
@@ -2133,7 +2132,6 @@ if results.get("search_failed"):
         st.info(search_result["verification_summary"])
     for warning in search_result.get("warnings", []):
         st.warning(warning)
-    render_diagnostics(results, state)
     st.stop()
 
 
@@ -2228,8 +2226,6 @@ with analysis_col:
     render_analysis_details_column(results, step_statuses, status)
 with briefing_col:
     render_briefing_column(results, status)
-
-render_diagnostics(results, state)
 
 
 

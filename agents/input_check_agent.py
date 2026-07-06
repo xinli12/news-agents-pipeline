@@ -43,6 +43,9 @@ def get_input_check_agent(model_name: str | None = None) -> Agent:
             "     Avoid queries like: 'BBC news article c4gy700j0eko'. Explain the decision in 'explanation'.\n"
             "   - If it is NOT news-related: set action to 'reject_with_confirmation', is_news_related to false, set converted_query to null, "
             "and use notification_message to explain the rejection and ask if they would like to revise it.\n\n"
+            "Spelling Errors:\n"
+            "If the input contains an obvious spelling error, notify the user about it in 'notification_message'. "
+            "You should ONLY notify the user; do NOT reject the input or change the selected action solely because of the spelling error.\n\n"
             "Always output valid JSON complying with the InputValidationResult schema."
         ),
         tools=[scrape_article_text],
