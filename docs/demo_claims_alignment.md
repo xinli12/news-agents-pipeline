@@ -9,7 +9,7 @@ This note keeps the demo story aligned with the current implementation on `origi
 | Adaptive recruitment | `agents/recruiter_agent.py` emits `RecruitmentResult`; `agents/coordinator.py` skips Dispute, Perspective, Expert, and Outlook stages when recruitment flags are false. |
 | Dynamic expert panel | `agents/expert_agent.py` selects 2-3 domains; `agents/coordinator.py` creates one domain expert per selected domain and runs them in parallel. |
 | Schema-constrained outputs | `agents/schemas.py` defines Pydantic schemas for search, facts, disputes, perspectives, experts, public report, recruitment, audits, and outlook. |
-| Audit loop | `agents/coordinator.py` wraps input check, search, recruiter, fact, dispute, perspective, expert, outlook, and public report stages with bounded audit attempts. |
+| Audit loop | `agents/coordinator.py` wraps search, recruiter, fact, dispute, perspective, expert, outlook, and public report stages with bounded audit attempts. Input check has no audit gate. |
 | Deterministic evidence verification | `agents/evidence_verifier.py` checks cited URLs, quote match, source/date/bias consistency, timeline evidence, and public-report evidence. |
 | Search dedupe and wire collapse | `agents/search_agent.py` removes duplicate URLs and collapses likely wire-service/reprint clusters before article selection. |
 | Deterministic public editor report | `agents/report_renderer.py` builds the folded report without another LLM call. |

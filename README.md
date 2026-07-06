@@ -15,7 +15,7 @@ The project is intended for learning and experimentation only, not commercial us
 | Source analysis | Classifies article-level bias/framing and tone neutrality, and preserves source-balance metadata. |
 | Modular agents | Recruits dispute, perspective, expert, and future-outlook agents only when the topic appears to need them. |
 | Dynamic expert panel | The Expert Agent selects 2-3 relevant professional domains at runtime, then spawns exactly that many domain-expert agents in parallel and synthesizes a roundtable summary. |
-| Audit loop | Runs per-stage audit agents with bounded revision cycles (tiered by risk) and surfaces unresolved warnings. |
+| Audit loop | Runs audit agents on every stage after input check, with bounded revision cycles (tiered by risk), and surfaces unresolved warnings. The Input Check Agent itself has no audit gate. |
 | Public output | Produces a concise public report, a folded dashboard report assembled by a deterministic renderer (no LLM call), and a Streamlit dashboard with Analysis Details, Briefing, and collapsed trust diagnostics. |
 
 ## Architecture
@@ -49,8 +49,7 @@ graph TD
     PR --> PE["Report Renderer (deterministic template, no LLM)"]
     PE --> OUT["Streamlit / CLI / ADK / FastAPI output"]
 
-    A["Audit Agents"] -. "bounded revision feedback" .-> R
-    A -. "bounded revision feedback" .-> S
+    A["Audit Agents"] -. "bounded revision feedback" .-> S
     A -. "bounded revision feedback" .-> C
     A -. "bounded revision feedback" .-> F
     A -. "bounded revision feedback" .-> D
@@ -168,19 +167,9 @@ agents-cli eval grade --config tests/eval/eval_config.yaml
 ## Configuration
 
 - `GEMINI_API_KEY` or `GOOGLE_API_KEY`: required for live agent runs.
-- `CURRENT_MODEL`: set internally by the coordinator from the selected model. The Streamlit selector currently defaults to Gemma 4; non-UI coordinator calls fall back to `gemini-3.1-flash-lite` unless a caller passes a model.
+- `CURRENT_MODEL`: set internally by the coordinator from the selected model. The Streamlit selector currently defaults to Gemini 3.5 Flash; non-UI coordinator calls fall back to `gemini-3.1-flash-lite` unless a caller passes a model.
 - `LOGS_BUCKET_NAME`: optional GCS bucket for ADK artifact/telemetry paths in deployed environments.
 - `ALLOW_ORIGINS`: optional comma-separated CORS allowlist for the FastAPI app.
-
-## Capstone Rubric Coverage
-
-| Category | Status | Where |
-| --- | --- | --- |
-| Multi-agent systems | Done | `agents/coordinator.py` orchestrates 10+ specialist agents with runtime-decided fan-out: the Recruiter Agent adaptively skips agents for simple topics, and the Expert Agent spawns a variable-size parallel domain-expert panel (see Architecture above). |
-| Deployability | Done | `Dockerfile` + `agents/fast_api_app.py` (ADK FastAPI server); no API keys committed, read from environment/`.env`. |
-| Security features | Partial | See Security Notes below; scraped/searched external content is treated as untrusted input, but no formal SSRF/prompt-injection hardening yet. |
-| Antigravity | Not used | N/A for this submission. |
-| Agent skills | N/A | Not applicable to this ADK-based submission. |
 
 ## Security Notes
 

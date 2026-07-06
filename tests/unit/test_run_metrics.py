@@ -29,7 +29,9 @@ def test_step_timing_aggregation_records_duration() -> None:
     metrics = create_run_metrics("test-model", start_timestamp=100.0)
 
     record_progress_event(metrics, "search", "Search started", timestamp=110.0)
-    record_progress_event(metrics, "search_complete", "Search complete", timestamp=125.5)
+    record_progress_event(
+        metrics, "search_complete", "Search complete", timestamp=125.5
+    )
     finalize_run_metrics(
         metrics,
         final_status="completed",

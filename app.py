@@ -8,6 +8,7 @@ import uuid
 from urllib.parse import urlparse
 
 import streamlit as st
+import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
 from agents.app_utils.run_metrics import (
@@ -437,18 +438,171 @@ st.markdown(
             padding-left: 2.5rem !important;
         }
     }
+
+    /* Dark mode: keep the custom palette in sync with Streamlit's actual
+       resolved theme (system preference OR the user's manual Light/Dark
+       choice in the Streamlit menu) so widget labels/menus never end up
+       light-on-light or dark-on-dark against our custom containers. The
+       "html.nl-theme-dark" class is toggled by the script below, since
+       Streamlit does not expose its resolved theme as a CSS variable. */
+    html.nl-theme-dark {
+        --ink: #e8edf1;
+        --muted: #93a4b0;
+        --line: #2f3b44;
+        --paper: #1a2229;
+        --surface: #10151a;
+        --teal: #2dd4bf;
+        --navy: #7fa8d9;
+        --amber: #f2b84b;
+        --red: #f87171;
+    }
+    html.nl-theme-dark textarea, html.nl-theme-dark input {
+        background: var(--paper) !important;
+    }
+    html.nl-theme-dark textarea::placeholder, html.nl-theme-dark input::placeholder {
+        color: #8a9aa6 !important;
+    }
+    html.nl-theme-dark div.stButton > button[kind="primary"],
+    html.nl-theme-dark button[data-testid="stBaseButton-primary"],
+    html.nl-theme-dark button[data-testid="stBaseButton-primaryFormSubmit"] {
+        color: #062723 !important;
+    }
+    html.nl-theme-dark .status-chip {
+        background: var(--paper);
+    }
+    html.nl-theme-dark .status-chip.good { border-color: #1f6d63; }
+    html.nl-theme-dark .status-chip.warn { border-color: #7a5a1f; }
+    html.nl-theme-dark .status-chip.bad { border-color: #7a2b2b; }
+    html.nl-theme-dark .status-indicator.running {
+        background: rgba(56, 189, 248, 0.12);
+        color: #7dd3fc;
+        border: 1px solid rgba(56, 189, 248, 0.35);
+    }
+    html.nl-theme-dark .status-indicator.paused {
+        background: rgba(245, 158, 11, 0.12);
+        color: #fbbf24;
+        border: 1px solid rgba(245, 158, 11, 0.35);
+    }
+    html.nl-theme-dark .status-indicator.stopping {
+        background: rgba(249, 115, 22, 0.12);
+        color: #fb923c;
+        border: 1px solid rgba(249, 115, 22, 0.35);
+    }
+    html.nl-theme-dark .status-indicator.stopped {
+        background: rgba(148, 163, 184, 0.12);
+        color: #cbd5e1;
+        border: 1px solid rgba(148, 163, 184, 0.3);
+    }
+    html.nl-theme-dark .status-indicator.completed {
+        background: rgba(52, 211, 153, 0.12);
+        color: #6ee7b7;
+        border: 1px solid rgba(52, 211, 153, 0.35);
+    }
+    html.nl-theme-dark .status-indicator.failed {
+        background: rgba(248, 113, 113, 0.12);
+        color: #fca5a5;
+        border: 1px solid rgba(248, 113, 113, 0.35);
+    }
+    html.nl-theme-dark .stepper-container,
+    html.nl-theme-dark .progress-panel,
+    html.nl-theme-dark .step-badge {
+        background: var(--paper);
+    }
+    html.nl-theme-dark .step-card.queued { color: #64748b; }
+    html.nl-theme-dark .step-card.running {
+        color: #7dd3fc;
+        background: rgba(56, 189, 248, 0.12);
+        box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.35);
+    }
+    html.nl-theme-dark .step-card.paused {
+        color: #fbbf24;
+        background: rgba(245, 158, 11, 0.12);
+        box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.35);
+    }
+    html.nl-theme-dark .step-card.completed { color: #6ee7b7; }
+    html.nl-theme-dark .step-card.skipped { color: #64748b; }
+    html.nl-theme-dark .step-card.failed {
+        color: #fca5a5;
+        background: rgba(248, 113, 113, 0.12);
+        box-shadow: 0 0 0 2px rgba(248, 113, 113, 0.35);
+    }
+    html.nl-theme-dark .step-card.stopped { color: #cbd5e1; }
+    html.nl-theme-dark .stop-callout {
+        background: rgba(249, 115, 22, 0.12);
+        border: 1px solid rgba(249, 115, 22, 0.35);
+        color: #fdba74;
+    }
+    html.nl-theme-dark .step-card.completed .step-badge {
+        background: rgba(45, 212, 191, 0.15);
+        border-color: #2dd4bf;
+        color: #2dd4bf;
+    }
+    html.nl-theme-dark .step-card.running .step-badge {
+        background: #0ea5e9;
+        border-color: #0ea5e9;
+    }
+    html.nl-theme-dark .step-card.paused .step-badge {
+        background: #f59e0b;
+        border-color: #f59e0b;
+    }
+    html.nl-theme-dark .step-card.failed .step-badge {
+        background: #ef4444;
+        border-color: #ef4444;
+    }
+    html.nl-theme-dark .step-card.stopping .step-badge {
+        background: #fb923c;
+        border-color: #fb923c;
+    }
+    html.nl-theme-dark .step-card.skipped .step-badge {
+        background: rgba(148, 163, 184, 0.12);
+    }
+    html.nl-theme-dark .loading-card {
+        background: rgba(26, 34, 41, 0.65);
+    }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-
-def clamp_score(value: float | int | None) -> float:
-    try:
-        score = float(value or 0)
-    except (TypeError, ValueError):
-        return 0.0
-    return max(0.0, min(1.0, score))
+# `st.markdown` inserts HTML via dangerouslySetInnerHTML, so any <script> tag in it
+# is inert and never runs. `components.html` renders in a same-origin (srcdoc) iframe,
+# where scripts do execute and can reach back into `window.parent` to toggle a class
+# on the real document based on Streamlit's actual resolved theme (which isn't exposed
+# as a CSS variable) -- see the "html.nl-theme-dark" rules above.
+components.html(
+    """
+    <script>
+    (function () {
+        function resolveTheme() {
+            try {
+                var ls = window.parent.localStorage;
+                for (var i = 0; i < ls.length; i++) {
+                    var key = ls.key(i);
+                    if (key && key.indexOf("stActiveTheme") === 0) {
+                        var value = ls.getItem(key);
+                        if (value === '"Dark"') return true;
+                        if (value === '"Light"') return false;
+                    }
+                }
+            } catch (e) {
+                /* cross-origin or unavailable; fall back to OS preference */
+            }
+            return window.parent.matchMedia("(prefers-color-scheme: dark)").matches;
+        }
+        function applyTheme() {
+            window.parent.document.documentElement.classList.toggle("nl-theme-dark", resolveTheme());
+        }
+        applyTheme();
+        if (!window.parent.__nlThemeWatcherStarted) {
+            window.parent.__nlThemeWatcherStarted = true;
+            window.parent.setInterval(applyTheme, 800);
+            window.parent.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
+        }
+    })();
+    </script>
+    """,
+    height=0,
+)
 
 
 def safe_text(value) -> str:
@@ -679,7 +833,9 @@ def request_stop(state: dict) -> None:
     state.setdefault("control", {})["stopped"] = True
     state.setdefault("control", {})["paused"] = False
     state["status"] = "stopping"
-    state["current_step"] = "Stop requested. Waiting for the active agent call to unwind."
+    state["current_step"] = (
+        "Stop requested. Waiting for the active agent call to unwind."
+    )
     state.setdefault("progress_logs", []).append(
         {
             "step": "stop_requested",
@@ -805,7 +961,9 @@ def support_state(value: str | None, evidence: list[dict] | None) -> tuple[str, 
     support_lower = support.lower()
     if not support:
         support = "Evidence attached" if evidence else "No evidence attached"
-    if any(term in support_lower for term in ["weak", "under", "missing", "unsupported"]):
+    if any(
+        term in support_lower for term in ["weak", "under", "missing", "unsupported"]
+    ):
         return support, "warn"
     if evidence:
         return support, ""
@@ -872,7 +1030,10 @@ def render_compact_audit(entries: list[dict], heading: str) -> None:
 
 
 def render_evidence_items(
-    evidence: list[dict], heading: str = "Evidence", max_items: int = 4, show_bias: bool = True
+    evidence: list[dict],
+    heading: str = "Evidence",
+    max_items: int = 4,
+    show_bias: bool = True,
 ) -> None:
     st.markdown(f"**{heading}**")
     if not evidence:
@@ -912,7 +1073,12 @@ def render_input_check(input_check: dict) -> None:
     explanation = input_check.get("explanation", "")
     notification = input_check.get("notification_message", "")
 
-    chips = [(action.replace("_", " ").title(), "good" if "accept" in action or action == "convert" else "warn")]
+    chips = [
+        (
+            action.replace("_", " ").title(),
+            "good" if "accept" in action or action == "convert" else "warn",
+        )
+    ]
     if input_check.get("is_news_related") is True:
         chips.append(("News Relevant", "good"))
     else:
@@ -958,15 +1124,33 @@ def render_source_table(articles: list[dict]) -> None:
 
     html_lines = []
     html_lines.append("<style>")
-    html_lines.append("  .source-table-container { max-height: 450px; overflow-y: auto; border: 1px solid rgba(128, 128, 128, 0.2); border-radius: 6px; margin-top: 10px; }")
-    html_lines.append("  .source-table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }")
-    html_lines.append("  .source-table th { position: sticky; top: 0; z-index: 10; background-color: var(--secondary-background-color, #f8f9fa); border-bottom: 2px solid rgba(128, 128, 128, 0.2); padding: 8px 10px; text-align: left; font-weight: 600; }")
-    html_lines.append("  .source-table td { border-bottom: 1px solid rgba(128, 128, 128, 0.15); padding: 8px 10px; vertical-align: top; word-wrap: break-word; word-break: break-word; }")
-    html_lines.append("  .badge { display: inline-block; padding: 2px 6px; font-size: 0.75rem; font-weight: 600; border-radius: 4px; text-align: center; }")
-    html_lines.append("  .badge-left { background-color: rgba(30, 144, 255, 0.15); color: #1e90ff; }")
-    html_lines.append("  .badge-right { background-color: rgba(220, 20, 60, 0.15); color: #dc143c; }")
-    html_lines.append("  .badge-center { background-color: rgba(255, 140, 0, 0.15); color: #ff8c00; }")
-    html_lines.append("  .badge-other { background-color: rgba(128, 128, 128, 0.15); color: #808080; }")
+    html_lines.append(
+        "  .source-table-container { max-height: 450px; overflow-y: auto; border: 1px solid rgba(128, 128, 128, 0.2); border-radius: 6px; margin-top: 10px; }"
+    )
+    html_lines.append(
+        "  .source-table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }"
+    )
+    html_lines.append(
+        "  .source-table th { position: sticky; top: 0; z-index: 10; background-color: var(--paper, #f8f9fa); border-bottom: 2px solid rgba(128, 128, 128, 0.2); padding: 8px 10px; text-align: left; font-weight: 600; }"
+    )
+    html_lines.append(
+        "  .source-table td { border-bottom: 1px solid rgba(128, 128, 128, 0.15); padding: 8px 10px; vertical-align: top; word-wrap: break-word; word-break: break-word; }"
+    )
+    html_lines.append(
+        "  .badge { display: inline-block; padding: 2px 6px; font-size: 0.75rem; font-weight: 600; border-radius: 4px; text-align: center; }"
+    )
+    html_lines.append(
+        "  .badge-left { background-color: rgba(30, 144, 255, 0.15); color: #1e90ff; }"
+    )
+    html_lines.append(
+        "  .badge-right { background-color: rgba(220, 20, 60, 0.15); color: #dc143c; }"
+    )
+    html_lines.append(
+        "  .badge-center { background-color: rgba(255, 140, 0, 0.15); color: #ff8c00; }"
+    )
+    html_lines.append(
+        "  .badge-other { background-color: rgba(128, 128, 128, 0.15); color: #808080; }"
+    )
     html_lines.append("  .neut-high { color: #2e7d32; font-weight: bold; }")
     html_lines.append("  .neut-med { color: #ef6c00; font-weight: bold; }")
     html_lines.append("  .neut-low { color: #c62828; font-weight: bold; }")
@@ -974,9 +1158,29 @@ def render_source_table(articles: list[dict]) -> None:
     html_lines.append("  .full-text { display: none; }")
     html_lines.append("  .toggle-checkbox:checked ~ .full-text { display: inline; }")
     html_lines.append("  .toggle-checkbox:checked ~ .truncated-text { display: none; }")
-    html_lines.append("  .toggle-label { color: #1e90ff; cursor: pointer; font-size: 0.8rem; font-weight: 600; display: inline-block; margin-top: 2px; }")
+    html_lines.append(
+        "  .toggle-label { color: #1e90ff; cursor: pointer; font-size: 0.8rem; font-weight: 600; display: inline-block; margin-top: 2px; }"
+    )
     html_lines.append("  .toggle-label::before { content: 'Show more'; }")
-    html_lines.append("  .toggle-checkbox:checked ~ .toggle-label::before { content: 'Show less'; }")
+    html_lines.append(
+        "  .toggle-checkbox:checked ~ .toggle-label::before { content: 'Show less'; }"
+    )
+    html_lines.append(
+        "  html.nl-theme-dark .badge-left { background-color: rgba(56, 189, 248, 0.2); color: #7dd3fc; }"
+    )
+    html_lines.append(
+        "  html.nl-theme-dark .badge-right { background-color: rgba(248, 113, 113, 0.2); color: #fca5a5; }"
+    )
+    html_lines.append(
+        "  html.nl-theme-dark .badge-center { background-color: rgba(251, 146, 60, 0.2); color: #fdba74; }"
+    )
+    html_lines.append(
+        "  html.nl-theme-dark .badge-other { background-color: rgba(148, 163, 184, 0.2); color: #cbd5e1; }"
+    )
+    html_lines.append("  html.nl-theme-dark .neut-high { color: #4ade80; }")
+    html_lines.append("  html.nl-theme-dark .neut-med { color: #fb923c; }")
+    html_lines.append("  html.nl-theme-dark .neut-low { color: #f87171; }")
+    html_lines.append("  html.nl-theme-dark .toggle-label { color: #7dd3fc; }")
     html_lines.append("</style>")
     html_lines.append("<div class='source-table-container'>")
     html_lines.append("<table class='source-table'>")
@@ -997,7 +1201,9 @@ def render_source_table(articles: list[dict]) -> None:
         url = article.get("url", "")
         perspective = article.get("bias_category", "")
 
-        raw_neutrality = str(article.get("neutrality", "")).strip(" ,\"'").upper().replace(" ", "_")
+        raw_neutrality = (
+            str(article.get("neutrality", "")).strip(" ,\"'").upper().replace(" ", "_")
+        )
         if raw_neutrality == "HIGH_NEUTRALITY":
             neutrality = "High Neutrality"
             neut_class = "neut-high"
@@ -1027,7 +1233,7 @@ def render_source_table(articles: list[dict]) -> None:
             last_space = truncated.rfind(" ")
             if last_space > 80:
                 truncated = truncated[:last_space]
-            remaining = summary[len(truncated):]
+            remaining = summary[len(truncated) :]
 
             summary_html = (
                 f"<div class='expandable-text'>"
@@ -1109,61 +1315,6 @@ def render_landscape(articles_data: dict) -> None:
     st.altair_chart(chart, use_container_width=True)
 
 
-def render_public_summary(results: dict) -> None:
-    public_report = results.get("public_report") or {}
-    articles_data = results.get("articles") or {}
-    recruitment = results.get("recruitment") or {}
-
-    render_quality_review_notice(results)
-
-    with st.container(border=True):
-        st.markdown(f"## {public_report.get('title', 'News briefing')}")
-        lead = public_report.get("lead_paragraph") or "No public summary was generated."
-        st.write(lead)
-
-        takeaways = public_report.get("key_takeaways") or []
-        if takeaways:
-            st.markdown("#### Key takeaways")
-            for takeaway in takeaways:
-                if isinstance(takeaway, dict):
-                    st.markdown(f"- {takeaway.get('point', '')}")
-                    links = []
-                    for item in takeaway.get("evidence") or []:
-                        source = item.get("source") or "Source"
-                        link = safe_markdown_link(source, item.get("url"))
-                        if link:
-                            links.append(link)
-                    if links:
-                        st.caption("Sources: " + " · ".join(links))
-                else:
-                    st.markdown(f"- {takeaway}")
-
-    chips = []
-    status = str(articles_data.get("search_status", "verified")).lower()
-    chips.append(
-        (f"Search: {status}", "good" if status in {"verified", "corrected"} else "warn")
-    )
-    complexity = recruitment.get("complexity_level")
-    if complexity:
-        chips.append(
-            (f"Complexity: {complexity}", "good" if complexity == "low" else "warn")
-        )
-    render_chips(chips)
-
-    if public_report.get("narrative_summary"):
-        with st.expander("Narrative synthesis", expanded=True):
-            st.write(public_report["narrative_summary"])
-
-    if public_report.get("future_outlook"):
-        with st.expander("What to watch next", expanded=True):
-            st.write(public_report["future_outlook"])
-
-    editor_report = results.get("public_editor_report")
-    if editor_report:
-        with st.expander("Full public editor report", expanded=False):
-            st.markdown(editor_report)
-
-
 def render_consensus_and_timeline(facts: dict) -> None:
     consensus = facts.get("consensus_facts", [])
     st.markdown("#### Consensus facts")
@@ -1173,9 +1324,7 @@ def render_consensus_and_timeline(facts: dict) -> None:
         with st.expander(
             f"{idx}. {item.get('claim', 'Untitled fact')}", expanded=idx <= 2
         ):
-            st.markdown(
-                f"**Sources:** {join_or_dash(item.get('supporting_sources'))}"
-            )
+            st.markdown(f"**Sources:** {join_or_dash(item.get('supporting_sources'))}")
             render_evidence_items(item.get("evidence", []), show_bias=False)
             explanation = item.get("explanation")
             if explanation:
@@ -1289,7 +1438,10 @@ def render_disputes(facts: dict, results: dict | None = None) -> None:
                 )
                 render_chips(
                     [
-                        (f"{count_items(side_a_evidence)} evidence items", side_a_state),
+                        (
+                            f"{count_items(side_a_evidence)} evidence items",
+                            side_a_state,
+                        ),
                         (side_a_support, side_a_state),
                     ]
                 )
@@ -1303,7 +1455,10 @@ def render_disputes(facts: dict, results: dict | None = None) -> None:
                 )
                 render_chips(
                     [
-                        (f"{count_items(side_b_evidence)} evidence items", side_b_state),
+                        (
+                            f"{count_items(side_b_evidence)} evidence items",
+                            side_b_state,
+                        ),
                         (side_b_support, side_b_state),
                     ]
                 )
@@ -1391,7 +1546,9 @@ def render_perspectives(narratives: dict, results: dict | None = None) -> None:
                 chips = [(support_status, support_chip)]
                 evidence = profile.get("evidence", [])
                 evidence_state = "" if evidence else "warn"
-                chips.append((f"{count_items(evidence)} evidence items", evidence_state))
+                chips.append(
+                    (f"{count_items(evidence)} evidence items", evidence_state)
+                )
                 if profile.get("unsupported_warning"):
                     chips.append(("not enough source support found", "warn"))
                 render_chips(chips)
@@ -1512,78 +1669,6 @@ def render_experts_and_outlook(experts: dict, outlook: dict) -> None:
     st.divider()
     st.markdown("### Future outlook")
     render_outlook_scenarios(outlook)
-
-
-def render_recruitment(recruitment: dict) -> None:
-    if not recruitment:
-        return
-    st.markdown("### Recruitment decision")
-    cols = st.columns(4)
-    cols[0].metric("Dispute", "Yes" if recruitment.get("recruit_dispute") else "No")
-    cols[1].metric(
-        "Perspective", "Yes" if recruitment.get("recruit_perspective") else "No"
-    )
-    cols[2].metric("Expert", "Yes" if recruitment.get("recruit_expert") else "No")
-    cols[3].metric(
-        "Outlook", "Yes" if recruitment.get("recruit_future_outlook") else "No"
-    )
-    st.write(recruitment.get("recruitment_justification", ""))
-
-
-def render_audit_trail(results: dict) -> None:
-    warnings = results.get("audit_warnings") or []
-    logs = results.get("editor_logs") or []
-    if warnings:
-        st.markdown("### Unresolved warnings")
-        for warning in warnings:
-            agent_label = friendly_agent_name(warning.get("agent") or warning.get("step"))
-            st.warning(f"{agent_label}: {warning.get('feedback')}")
-            fixes = warning.get("recommended_fixes") or []
-            if fixes:
-                with st.expander("Recommended fixes", expanded=False):
-                    for fix in fixes:
-                        st.write(fix)
-
-    st.markdown("### Audit loop")
-    if not logs:
-        st.info("No audit logs were recorded.")
-        return
-
-    import pandas as pd
-
-    rows = [
-        {
-            "Agent": friendly_agent_name(log.get("agent")),
-            "Stage": friendly_agent_name(log.get("step")),
-            "Attempt": log.get("attempt", ""),
-            "Status": approval_label(log.get("approved")),
-            "Feedback Preview": feedback_preview(log.get("feedback", "")),
-        }
-        for log in logs
-    ]
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
-    for log in logs:
-        approved = log.get("approved", False)
-        label = approval_label(approved)
-        agent_label = friendly_agent_name(log.get("agent"))
-        with st.expander(
-            f"{agent_label} attempt {log.get('attempt', '')}: {label}",
-            expanded=not approved,
-        ):
-            if log.get("feedback"):
-                st.markdown("**Full feedback**")
-                st.write(log["feedback"])
-            feedback_items = log.get("audit_feedback") or []
-            if feedback_items:
-                st.markdown("**Audit feedback**")
-                for item in feedback_items:
-                    st.write(item)
-            fixes = log.get("recommended_fixes") or []
-            if fixes:
-                st.markdown("**Recommended fixes**")
-                for fix in fixes:
-                    st.write(fix)
 
 
 def has_fact_content(facts: dict) -> bool:
@@ -1748,7 +1833,11 @@ def render_expert_outlook_section(
     outlook = results.get("outlook") or {}
     scenarios = outlook.get("alternative_scenarios") or []
     outlook_step = step_statuses.get("outlook")
-    if not scenarios and outlook_step in ["queued", "running"] and is_active_run(status):
+    if (
+        not scenarios
+        and outlook_step in ["queued", "running"]
+        and is_active_run(status)
+    ):
         render_loading_card(
             "Generating future scenarios",
             "The Future Outlook Agent is modeling likelihood bands and monitoring indicators.",
@@ -1761,9 +1850,6 @@ def render_expert_outlook_section(
         st.divider()
         st.markdown("#### Future outlook")
         render_outlook_scenarios(outlook)
-
-
-
 
 
 def render_briefing_column(results: dict, status: str) -> None:
@@ -1807,7 +1893,6 @@ def render_briefing_column(results: dict, status: str) -> None:
     else:
         st.info("No key takeaways were generated.")
 
-
     if public_report.get("narrative_summary"):
         with st.expander("Narrative synthesis", expanded=False):
             st.write(public_report["narrative_summary"])
@@ -1817,16 +1902,13 @@ def render_briefing_column(results: dict, status: str) -> None:
             st.write(public_report["future_outlook"])
 
 
-
 def render_analysis_details_column(
     results: dict, step_statuses: dict, status: str
 ) -> None:
     st.markdown("## Analysis details")
-    tab_sources, tab_facts, tab_expert = st.tabs([
-        "Sources",
-        "Facts, Disputes & Perspectives",
-        "Expert & Outlook"
-    ])
+    tab_sources, tab_facts, tab_expert = st.tabs(
+        ["Sources", "Facts, Disputes & Perspectives", "Expert & Outlook"]
+    )
     with tab_sources:
         render_sources_section(results, status)
     with tab_facts:
@@ -2084,7 +2166,9 @@ def worker_thread_fn(
                 bypass_input_check=bypass_input_check,
             )
         )
-        final_status = "stopped" if shared_state["control"].get("stopped") else "completed"
+        final_status = (
+            "stopped" if shared_state["control"].get("stopped") else "completed"
+        )
         run_metrics = shared_state.get("run_metrics")
         if isinstance(run_metrics, dict):
             try:
@@ -2210,10 +2294,9 @@ with st.expander("Settings", expanded=False):
         model_display = st.selectbox(
             "Model Selection",
             options=[
-                "Gemma 4 (Open Source)",
                 "Gemini 3.5 Flash (High)",
                 "Gemini 3.1 Flash Lite (Low-Cost)",
-                "Gemini 3.5 Pro (Premium)",
+                "Gemini 3.1 Pro Preview (Premium)",
             ],
             index=0,
             help="Select the underlying AI model for the agents.",
@@ -2221,15 +2304,14 @@ with st.expander("Settings", expanded=False):
         MODEL_MAPPING = {
             "Gemini 3.5 Flash (High)": "gemini-3.5-flash",
             "Gemini 3.1 Flash Lite (Low-Cost)": "gemini-3.1-flash-lite",
-            "Gemini 3.5 Pro (Premium)": "gemini-3.5-pro",
-            "Gemma 4 (Open Source)": "gemma-4-26b-a4b-it",
+            "Gemini 3.1 Pro Preview (Premium)": "gemini-3.1-pro-preview",
         }
         selected_model = MODEL_MAPPING[model_display]
     with settings_col_2:
         enable_editor = st.toggle(
             "Allow audit revisions",
             value=True,
-            help="User-facing analysis stages can revise up to two times; routing stages (input check, recruiter) get one before the safest available output is flagged.",
+            help="User-facing analysis stages can revise up to two times; the recruiter (routing) stage gets one. Input check has no audit gate.",
         )
 
 
@@ -2355,7 +2437,9 @@ def render_restore_panel(snapshot: dict) -> None:
             type="primary",
             use_container_width=True,
         ):
-            st.session_state["shared_state"] = restore_snapshot_as_display_state(snapshot)
+            st.session_state["shared_state"] = restore_snapshot_as_display_state(
+                snapshot
+            )
             st.session_state["skip_snapshot_restore"] = False
             st.session_state.pop("chat_messages", None)
             st.rerun()
@@ -2537,7 +2621,6 @@ with analysis_col:
     render_analysis_details_column(results, step_statuses, status)
 with briefing_col:
     render_briefing_column(results, status)
-
 
 
 # --- Polling / Auto-rerun Loop for Active Running status ---

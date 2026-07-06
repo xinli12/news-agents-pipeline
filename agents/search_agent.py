@@ -17,6 +17,15 @@ WIRE_SOURCE_NAMES = {
     "agence france-presse": "AFP",
 }
 
+# Short abbreviations are ambiguous outside the source field: "ap" appears
+# inside ordinary words ("Japan", "approve") and phrases like "AP Calculus",
+# and "afp" can mean the Australian Federal Police. Only unambiguous full
+# names may match in the title/body text.
+_SHORT_WIRE_MARKERS = {"ap", "afp"}
+_WIRE_MARKER_PATTERNS = {
+    marker: re.compile(rf"\b{re.escape(marker)}\b") for marker in WIRE_SOURCE_NAMES
+}
+
 
 def get_domain(url: str) -> str:
     try:
@@ -41,7 +50,8 @@ def detect_wire_service(article: dict) -> str | None:
     body = str(article.get("body", "")).lower()
     combined = f"{source} {title} {body}"
     for marker, label in WIRE_SOURCE_NAMES.items():
-        if marker in combined:
+        haystack = source if marker in _SHORT_WIRE_MARKERS else combined
+        if _WIRE_MARKER_PATTERNS[marker].search(haystack):
             return label
     return None
 
@@ -94,7 +104,11 @@ def classify_search_results(
     with an unchanged prompt is unlikely to fix it.
     """
     if not articles:
-        return {"is_viewpoint_oriented": False, "complexity": "Simple", "article_bias": {}}
+        return {
+            "is_viewpoint_oriented": False,
+            "complexity": "Simple",
+            "article_bias": {},
+        }
 
     import os
     import sys
@@ -185,7 +199,11 @@ def classify_search_results(
         "Falling back to default classification.",
         file=sys.stderr,
     )
-    return {"is_viewpoint_oriented": False, "complexity": "Moderate", "article_bias": {}}
+    return {
+        "is_viewpoint_oriented": False,
+        "complexity": "Moderate",
+        "article_bias": {},
+    }
 
 
 def get_live_news_articles(topic: str) -> str:
@@ -334,14 +352,31 @@ def get_live_news_articles(topic: str) -> str:
                 # Prioritize relevance and source quality (bubble wire services first, keeping search relevance rank)
                 sorted_by_quality = sorted(
                     enumerate(results),
-                    key=lambda x: (0 if x[1].get("wire_service") else 1, x[0])
+                    key=lambda x: (0 if x[1].get("wire_service") else 1, x[0]),
                 )
                 selected_results = [r for _, r in sorted_by_quality[:max_to_scrape]]
                 bucket_counts = {
-                    "LEFT": sum(1 for r in selected_results if articles_bias_map.get(r.get("url", ""), "") == "LEFT"),
-                    "RIGHT": sum(1 for r in selected_results if articles_bias_map.get(r.get("url", ""), "") == "RIGHT"),
-                    "CENTER": sum(1 for r in selected_results if articles_bias_map.get(r.get("url", ""), "") == "CENTER"),
-                    "OTHER/NON-POLITICAL": sum(1 for r in selected_results if articles_bias_map.get(r.get("url", ""), "") not in ["LEFT", "RIGHT", "CENTER"]),
+                    "LEFT": sum(
+                        1
+                        for r in selected_results
+                        if articles_bias_map.get(r.get("url", ""), "") == "LEFT"
+                    ),
+                    "RIGHT": sum(
+                        1
+                        for r in selected_results
+                        if articles_bias_map.get(r.get("url", ""), "") == "RIGHT"
+                    ),
+                    "CENTER": sum(
+                        1
+                        for r in selected_results
+                        if articles_bias_map.get(r.get("url", ""), "") == "CENTER"
+                    ),
+                    "OTHER/NON-POLITICAL": sum(
+                        1
+                        for r in selected_results
+                        if articles_bias_map.get(r.get("url", ""), "")
+                        not in ["LEFT", "RIGHT", "CENTER"]
+                    ),
                 }
 
             # Scrape all selected articles in parallel

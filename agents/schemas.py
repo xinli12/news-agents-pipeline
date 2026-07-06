@@ -107,22 +107,23 @@ class ExpertOpinion(pydantic.BaseModel):
     expert_name: str  # The professional title/role of the expert (e.g. "Political & Constitutional Law Analyst") instead of a person's name
     expertise_area: str  # e.g., "Political Science", "Economics", "Media Literacy"
     commentary: str
-    recommended_reading_or_context: list[str]  # Recommended reading or background context, formatted as Markdown links ([Description](URL)) or URLs
-    cited_references: list[str]  # References/sources cited, formatted as Markdown links ([Title](URL)) or URLs
+    recommended_reading_or_context: list[
+        str
+    ]  # Recommended reading or background context, formatted as Markdown links ([Description](URL)) or URLs
+    cited_references: list[
+        str
+    ]  # References/sources cited, formatted as Markdown links ([Title](URL)) or URLs
     supporting_evidence: list[EvidenceItem] = pydantic.Field(default_factory=list)
 
 
 class ExpertDomainSelection(pydantic.BaseModel):
-    domains: list[str]  # 2-3 professional role titles, e.g. "Constitutional Law Specialist"
+    domains: list[
+        str
+    ]  # 2-3 professional role titles, e.g. "Constitutional Law Specialist"
     selection_rationale: str = ""
 
 
 class RoundtableSummary(pydantic.BaseModel):
-    roundtable_summary: str
-
-
-class ExpertPanelCommentary(pydantic.BaseModel):
-    expert_opinions: list[ExpertOpinion]
     roundtable_summary: str
 
 

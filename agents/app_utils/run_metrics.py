@@ -118,30 +118,6 @@ def create_run_metrics(
     }
 
 
-def ensure_run_metrics(
-    control_state: dict[str, Any] | None,
-    results_dict: dict[str, Any] | None,
-    model_name: str | None,
-) -> dict[str, Any]:
-    if control_state is not None:
-        metrics = control_state.get("run_metrics")
-        if not isinstance(metrics, dict):
-            metrics = create_run_metrics(model_name)
-            control_state["run_metrics"] = metrics
-        if results_dict is not None:
-            results_dict["run_metrics"] = metrics
-        return metrics
-
-    if results_dict is not None:
-        metrics = results_dict.get("run_metrics")
-        if not isinstance(metrics, dict):
-            metrics = create_run_metrics(model_name)
-            results_dict["run_metrics"] = metrics
-        return metrics
-
-    return create_run_metrics(model_name)
-
-
 def estimate_tokens_from_text(value: Any) -> int:
     if value is None:
         return 0
@@ -435,9 +411,7 @@ def record_result_token_estimate(
     if (metrics.get("token_usage") or {}).get("by_agent"):
         return
     result_snapshot = {
-        key: value
-        for key, value in results.items()
-        if key not in {"run_metrics"}
+        key: value for key, value in results.items() if key not in {"run_metrics"}
     }
     record_agent_token_usage(
         metrics,
