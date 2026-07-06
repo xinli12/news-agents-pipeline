@@ -4,6 +4,7 @@ import logging
 import os
 import threading
 import time
+import uuid
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -17,6 +18,12 @@ from agents.app_utils.run_metrics import (
     record_step_call_once,
     record_step_statuses,
     sync_audit_metrics,
+)
+from agents.app_utils.run_store import (
+    clear_saved_runs,
+    load_latest_run_snapshot,
+    restore_snapshot_as_display_state,
+    save_run_snapshot,
 )
 from agents.coordinator import NewsAnalysisCoordinator
 
@@ -528,6 +535,14 @@ def request_stop(state: dict) -> None:
     )
 
 
+def persist_run_snapshot(state: dict, context: str) -> None:
+    try:
+        if isinstance(state, dict):
+            save_run_snapshot(state)
+    except Exception:
+        logger.warning("Run snapshot save failed during %s", context, exc_info=True)
+
+
 def display_run_status(state: dict) -> str:
     results = state.get("results") or {}
     if results.get("reviewed") is False:
@@ -581,6 +596,7 @@ def render_primary_progress(state: dict) -> None:
                 use_container_width=True,
             ):
                 request_stop(state)
+                persist_run_snapshot(state, "main stop request")
                 st.rerun()
             copy_col.markdown(
                 '<div class="stop-callout">Stop is applied immediately in the UI. '
@@ -1725,6 +1741,12 @@ def render_diagnostics(results: dict, state: dict) -> None:
         diag_cols[0].metric("Run status", display_run_status(state))
         diag_cols[1].metric("Model", state.get("model_name", ""))
         diag_cols[2].metric("Topic", state.get("topic", ""))
+        if state.get("restored_snapshot"):
+            st.caption(
+                "Restored snapshot: yes"
+                f" | saved_at: {state.get('snapshot_saved_at') or 'unknown'}"
+                f" | interrupted: {bool(state.get('snapshot_interrupted'))}"
+            )
 
         metrics = state.get("run_metrics") or results.get("run_metrics") or {}
         if metrics:
@@ -1776,6 +1798,7 @@ def worker_thread_fn(
                 record_step_statuses(run_metrics, shared_state.get("step_statuses"))
             except Exception:
                 logger.warning("Run metrics progress update failed", exc_info=True)
+        persist_run_snapshot(shared_state, "progress update")
         # Short sleep to yield control to other async tasks
         await asyncio.sleep(0.01)
 
@@ -1813,6 +1836,7 @@ def worker_thread_fn(
         else:
             shared_state["status"] = "completed"
             shared_state["results"] = results
+        persist_run_snapshot(shared_state, "worker completion")
     except Exception as exc:
         final_status = "stopped" if shared_state["control"].get("stopped") else "failed"
         run_metrics = shared_state.get("run_metrics")
@@ -1838,6 +1862,7 @@ def worker_thread_fn(
         else:
             shared_state["status"] = "failed"
             shared_state["error"] = str(exc)
+        persist_run_snapshot(shared_state, "worker failure")
     finally:
         loop.close()
 
@@ -2035,10 +2060,16 @@ def start_workflow(
     if previous_state.get("status") in ACTIVE_RUN_STATUSES:
         previous_state.setdefault("control", {})["stopped"] = True
         previous_state.setdefault("control", {})["paused"] = False
+        persist_run_snapshot(previous_state, "previous run stopped")
 
     start_timestamp = time.time()
+    run_id = (
+        f"{time.strftime('%Y%m%d-%H%M%S', time.gmtime(start_timestamp))}-"
+        f"{uuid.uuid4().hex[:8]}"
+    )
     run_metrics = create_run_metrics(model_name, start_timestamp=start_timestamp)
     shared_state = {
+        "run_id": run_id,
         "status": "running",
         "topic": topic_query,
         "current_step": "Spawning pipeline...",
@@ -2086,6 +2117,8 @@ def start_workflow(
     }
     st.session_state["shared_state"] = shared_state
     st.session_state.pop("chat_messages", None)
+    st.session_state["skip_snapshot_restore"] = False
+    persist_run_snapshot(shared_state, "workflow start")
 
     # Spawn worker thread
     thread = threading.Thread(
@@ -2100,6 +2133,46 @@ def start_workflow(
         daemon=True,
     )
     thread.start()
+
+
+def render_restore_panel(snapshot: dict) -> None:
+    topic = snapshot.get("topic") or "Untitled analysis"
+    saved_at = snapshot.get("saved_at") or "unknown"
+    status = snapshot.get("status") or "unknown"
+
+    with st.container(border=True):
+        st.markdown("### Restore latest analysis")
+        st.caption(
+            "A saved display snapshot is available locally. Restoring it will not "
+            "resume backend execution."
+        )
+        snapshot_cols = st.columns(3)
+        snapshot_cols[0].metric("Topic", topic)
+        snapshot_cols[1].metric("Saved", saved_at)
+        snapshot_cols[2].metric("Status", str(status).title())
+
+        action_cols = st.columns(3)
+        if action_cols[0].button(
+            "Restore latest analysis",
+            type="primary",
+            use_container_width=True,
+        ):
+            st.session_state["shared_state"] = restore_snapshot_as_display_state(snapshot)
+            st.session_state["skip_snapshot_restore"] = False
+            st.session_state.pop("chat_messages", None)
+            st.rerun()
+
+        if action_cols[1].button("Start fresh", use_container_width=True):
+            st.session_state["skip_snapshot_restore"] = True
+            st.rerun()
+
+        if action_cols[2].button("Clear saved runs", use_container_width=True):
+            try:
+                clear_saved_runs()
+            except Exception:
+                logger.warning("Clearing saved run snapshots failed", exc_info=True)
+            st.session_state["skip_snapshot_restore"] = True
+            st.rerun()
 
 
 with st.form("analysis_form"):
@@ -2128,6 +2201,16 @@ if submit:
 
 # --- Display Content Area ---
 if "shared_state" not in st.session_state:
+    if not st.session_state.get("skip_snapshot_restore"):
+        try:
+            latest_snapshot = load_latest_run_snapshot()
+        except Exception:
+            logger.warning("Loading latest run snapshot failed", exc_info=True)
+            latest_snapshot = None
+        if latest_snapshot:
+            render_restore_panel(latest_snapshot)
+            st.stop()
+
     st.info(
         "Enter a news topic above and click 'Run analysis' to start the multi-agent workflow."
     )
@@ -2137,6 +2220,16 @@ state = st.session_state["shared_state"]
 status = state["status"]
 results = state["results"]
 step_statuses = state.get("step_statuses") or {}
+
+if state.get("restored_snapshot"):
+    st.info(
+        "Restored saved snapshot. Backend execution is not running."
+        + (
+            " The saved run was interrupted after refresh."
+            if state.get("snapshot_interrupted")
+            else ""
+        )
+    )
 
 render_primary_progress(state)
 
@@ -2211,6 +2304,7 @@ with st.sidebar:
         ):
             state["control"]["paused"] = True
             state["status"] = "paused"
+            persist_run_snapshot(state, "pause")
             st.rerun()
     elif status == "paused":
         if btn_cols[0].button(
@@ -2221,6 +2315,7 @@ with st.sidebar:
         ):
             state["control"]["paused"] = False
             state["status"] = "running"
+            persist_run_snapshot(state, "resume")
             st.rerun()
 
     # Stop Button
@@ -2229,6 +2324,7 @@ with st.sidebar:
             "Stop now", key="stop_btn", type="primary", use_container_width=True
         ):
             request_stop(state)
+            persist_run_snapshot(state, "sidebar stop request")
             st.rerun()
 
     st.markdown("### Stepper")
