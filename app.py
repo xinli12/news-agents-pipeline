@@ -1,5 +1,6 @@
 import asyncio
 import html
+import logging
 import os
 import threading
 import time
@@ -7,9 +8,21 @@ import time
 import streamlit as st
 from dotenv import load_dotenv
 
+from agents.app_utils.run_metrics import (
+    build_metrics_summary,
+    create_run_metrics,
+    finalize_run_metrics,
+    record_progress_event,
+    record_result_token_estimate,
+    record_step_call_once,
+    record_step_statuses,
+    sync_audit_metrics,
+)
 from agents.coordinator import NewsAnalysisCoordinator
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 os.environ["NO_PROXY"] = "localhost,127.0.0.1"
 if os.getenv("GOOGLE_API_KEY") and not os.getenv("GEMINI_API_KEY"):
@@ -1647,6 +1660,58 @@ def render_analysis_details_column(
     render_expert_outlook_section(results, step_statuses, status)
 
 
+def render_run_metrics(metrics: dict) -> None:
+    st.markdown("### Run metrics")
+    summary = build_metrics_summary(metrics)
+    metric_cols = st.columns(6)
+    metric_cols[0].metric("Runtime", summary["total_runtime"])
+    metric_cols[1].metric("Status", str(summary["final_status"]).title())
+    metric_cols[2].metric("Model", summary["model_name"] or "-")
+    metric_cols[3].metric("Agent/step calls", summary["agent_calls"])
+    metric_cols[4].metric("Audit attempts", summary["audit_attempts"])
+    metric_cols[5].metric("Warnings", summary["warning_count"])
+
+    token_usage = metrics.get("token_usage") or {}
+    cost = metrics.get("cost_estimate") or {}
+    token_cols = st.columns(4)
+    token_cols[0].metric("Token usage", token_usage.get("usage_type", "not_available"))
+    token_cols[1].metric("Input tokens", token_usage.get("input_tokens") or "-")
+    token_cols[2].metric("Output tokens", token_usage.get("output_tokens") or "-")
+    token_cols[3].metric("Total tokens", token_usage.get("total_tokens") or "-")
+
+    cost_value = cost.get("estimated_total_cost")
+    if cost_value is None:
+        st.caption(cost.get("caveat") or "Cost estimate unavailable.")
+    else:
+        st.metric(
+            "Estimated cost",
+            f"{cost.get('currency', 'USD')} {cost_value:.6f}",
+        )
+        st.caption(cost.get("caveat") or "Estimated only. Provider billing may differ.")
+
+    steps = metrics.get("steps") or {}
+    if steps:
+        import pandas as pd
+
+        step_rows = []
+        for step_key, step_data in sorted(
+            steps.items(),
+            key=lambda item: item[1].get("start_timestamp") or 0,
+        ):
+            step_rows.append(
+                {
+                    "Step": step_data.get("label") or step_key,
+                    "Status": step_data.get("status", ""),
+                    "Duration": step_data.get("duration_display", "not available"),
+                    "Started": step_data.get("start_time") or "-",
+                    "Ended": step_data.get("end_time") or "-",
+                }
+            )
+        st.dataframe(pd.DataFrame(step_rows), use_container_width=True, hide_index=True)
+    else:
+        st.caption("Step duration data is not available yet.")
+
+
 def render_diagnostics(results: dict, state: dict) -> None:
     audit_count = len(results.get("audit_warnings") or []) + len(
         results.get("editor_logs") or []
@@ -1660,6 +1725,21 @@ def render_diagnostics(results: dict, state: dict) -> None:
         diag_cols[0].metric("Run status", display_run_status(state))
         diag_cols[1].metric("Model", state.get("model_name", ""))
         diag_cols[2].metric("Topic", state.get("topic", ""))
+
+        metrics = state.get("run_metrics") or results.get("run_metrics") or {}
+        if metrics:
+            try:
+                record_step_statuses(metrics, state.get("step_statuses"))
+                sync_audit_metrics(
+                    metrics,
+                    results.get("editor_logs"),
+                    results.get("audit_warnings"),
+                )
+                render_run_metrics(metrics)
+                st.divider()
+            except Exception:
+                logger.warning("Run metrics rendering failed", exc_info=True)
+                st.caption("Run metrics are unavailable for this run.")
 
         recruitment = results.get("recruitment") or {}
         if recruitment:
@@ -1683,10 +1763,19 @@ def worker_thread_fn(
     coordinator = NewsAnalysisCoordinator()
 
     async def progress_callback(step: str, message: str, payload: dict | None = None):
+        timestamp = time.time()
         shared_state["progress_logs"].append(
-            {"step": step, "message": message, "timestamp": time.time()}
+            {"step": step, "message": message, "timestamp": timestamp}
         )
         shared_state["current_step"] = message
+        run_metrics = shared_state.get("run_metrics")
+        if isinstance(run_metrics, dict):
+            try:
+                record_progress_event(run_metrics, step, message, timestamp)
+                record_step_call_once(run_metrics, step)
+                record_step_statuses(run_metrics, shared_state.get("step_statuses"))
+            except Exception:
+                logger.warning("Run metrics progress update failed", exc_info=True)
         # Short sleep to yield control to other async tasks
         await asyncio.sleep(0.01)
 
@@ -1702,12 +1791,48 @@ def worker_thread_fn(
                 bypass_input_check=bypass_input_check,
             )
         )
+        final_status = "stopped" if shared_state["control"].get("stopped") else "completed"
+        run_metrics = shared_state.get("run_metrics")
+        if isinstance(run_metrics, dict):
+            try:
+                record_result_token_estimate(run_metrics, results)
+                finalize_run_metrics(
+                    run_metrics,
+                    final_status=final_status,
+                    step_statuses=shared_state.get("step_statuses"),
+                    editor_logs=(results or {}).get("editor_logs"),
+                    audit_warnings=(results or {}).get("audit_warnings"),
+                )
+                if isinstance(results, dict):
+                    results["run_metrics"] = run_metrics
+                shared_state["results"]["run_metrics"] = run_metrics
+            except Exception:
+                logger.warning("Run metrics finalization failed", exc_info=True)
         if shared_state["control"].get("stopped"):
             shared_state["status"] = "stopped"
         else:
             shared_state["status"] = "completed"
             shared_state["results"] = results
     except Exception as exc:
+        final_status = "stopped" if shared_state["control"].get("stopped") else "failed"
+        run_metrics = shared_state.get("run_metrics")
+        if isinstance(run_metrics, dict):
+            try:
+                partial_results = shared_state.get("results") or {}
+                record_result_token_estimate(run_metrics, partial_results)
+                finalize_run_metrics(
+                    run_metrics,
+                    final_status=final_status,
+                    step_statuses=shared_state.get("step_statuses"),
+                    editor_logs=partial_results.get("editor_logs"),
+                    audit_warnings=partial_results.get("audit_warnings"),
+                )
+                partial_results["run_metrics"] = run_metrics
+            except Exception:
+                logger.warning(
+                    "Run metrics failure-state finalization failed",
+                    exc_info=True,
+                )
         if shared_state["control"].get("stopped"):
             shared_state["status"] = "stopped"
         else:
@@ -1911,6 +2036,8 @@ def start_workflow(
         previous_state.setdefault("control", {})["stopped"] = True
         previous_state.setdefault("control", {})["paused"] = False
 
+    start_timestamp = time.time()
+    run_metrics = create_run_metrics(model_name, start_timestamp=start_timestamp)
     shared_state = {
         "status": "running",
         "topic": topic_query,
@@ -1919,7 +2046,7 @@ def start_workflow(
             {
                 "step": "init",
                 "message": "Initializing news intelligence desk...",
-                "timestamp": time.time(),
+                "timestamp": start_timestamp,
             }
         ],
         "results": {
@@ -1938,6 +2065,7 @@ def start_workflow(
             "editor_logs": [],
             "audit_warnings": [],
             "is_approved": True,
+            "run_metrics": run_metrics,
         },
         "control": {"paused": False, "stopped": False},
         "step_statuses": {
@@ -1954,6 +2082,7 @@ def start_workflow(
         },
         "error": None,
         "model_name": model_name,
+        "run_metrics": run_metrics,
     }
     st.session_state["shared_state"] = shared_state
     st.session_state.pop("chat_messages", None)
