@@ -9,7 +9,6 @@ from agents.coordinator import (
     DISPUTE_AUDIT_CRITERIA,
     EXPERT_AUDIT_CRITERIA,
     FACT_AUDIT_CRITERIA,
-    INPUT_AUDIT_CRITERIA,
     OUTLOOK_AUDIT_CRITERIA,
     PERSPECTIVE_AUDIT_CRITERIA,
     PUBLIC_REPORTER_AUDIT_CRITERIA,
@@ -152,8 +151,7 @@ root_agent = NewsAnalysisWorkflowAgent(
         get_domain_expert_agent("Public Policy Analyst"),
         get_domain_expert_agent("Media Ethics Analyst"),
         get_domain_expert_agent("Financial Analyst"),
-        # Audit agents
-        get_audit_agent("input_check", INPUT_AUDIT_CRITERIA),
+        # Audit agents (input check has no audit gate; see coordinator.py)
         get_audit_agent("search", SEARCH_AUDIT_CRITERIA),
         get_audit_agent("recruiter", RECRUITER_AUDIT_CRITERIA),
         get_audit_agent("fact_bias", FACT_AUDIT_CRITERIA),

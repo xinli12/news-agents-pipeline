@@ -229,7 +229,7 @@ def render_outlook_panel(outlook: dict) -> None:
 def render_audit_trail_panel(
     editor_logs: list[dict], audit_warnings: list[dict]
 ) -> None:
-    """Mirrors the Streamlit Audit Trail tab's log table and unresolved warnings."""
+    """Mirrors the Streamlit "Why trust this analysis?" panel's log table and unresolved warnings."""
     if not editor_logs and not audit_warnings:
         return
 

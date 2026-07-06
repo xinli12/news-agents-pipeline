@@ -77,15 +77,6 @@ class WorkflowStoppedException(Exception):
 
 
 # --- Audit Criteria Definitions ---
-INPUT_AUDIT_CRITERIA = (
-    "1. The action must be exactly one of: 'accept', 'accept_with_notification', 'reject_with_confirmation', 'convert'.\n"
-    "2. If the input does not contain a URL or a copy-pasted article or paragraph, the action must not be convert, and converted_query must be null.\n"
-    "3. If the input contains a URL or copy-pasted article, the action must be 'convert'.\n"
-    "4. If action is 'convert', check if the URL/article is news-related. If it is, converted_query must be populated. If it is not, the action must be 'reject_with_confirmation'.\n"
-    "5. If action is 'accept_with_notification' or 'reject_with_confirmation', notification_message must be populated."
-)
-
-
 SEARCH_AUDIT_CRITERIA = (
     "1. Ideological balance (Left, Right, Center, Other/Non-Political) is preferred but optional. DO NOT reject if the search query simply returns limited viewpoints or articles.\n"
     "2. Wire service grouping should be checked, but do not reject if grouping is not applicable or minor.\n"
@@ -97,7 +88,9 @@ RECRUITER_AUDIT_CRITERIA = "1. Verify recruitment decisions: only recruit Disput
 
 FACT_AUDIT_CRITERIA = (
     "1. Verify factual neutrality: no evaluative adjectives or loaded terms.\n"
-    "2. Each consensus fact must have at least two independent sources and a valid, detailed explanation of why it is considered a fact.\n"
+    "2. Each consensus fact must have at least two independent sources and a valid, detailed explanation of why it is considered a fact. "
+    "Reject explanations that are vague or boilerplate (e.g. 'multiple sources confirm this'); the explanation must "
+    "name the specific sources and state the precise point on which their reporting agrees.\n"
     "3. Verify dates and timelines are chronologically consistent and cited accurately with URLs and short quotes.\n"
     "4. Verify the structured timeline includes evidence objects, not only uncited prose."
 )
@@ -688,10 +681,11 @@ class NewsAnalysisCoordinator:
         unresolved_audit_warnings = []
         # High-risk, user-facing stages (search, fact/dispute/perspective, expert,
         # outlook, public report) get the full revision budget since their output
-        # feeds directly into the final briefing. Low-risk routing/gating stages
-        # (input check, recruiter) only decide what runs next, not final content,
-        # so one revision is enough to catch a bad decision without doubling their
-        # LLM-call cost on every run.
+        # feeds directly into the final briefing. The Recruiter Agent only decides
+        # what runs next, not final content, so one revision is enough to catch a
+        # bad decision without doubling its LLM-call cost on every run. The Input
+        # Check Agent has no audit gate at all (see the plain `_run_agent` call
+        # below, not `_run_agent_with_audit`) and always proceeds on its result.
         audit_revision_cycles = 2 if enable_editor else 0
         light_revision_cycles = 1 if enable_editor else 0
 
@@ -738,7 +732,6 @@ class NewsAnalysisCoordinator:
                     "notification_message": None,
                     "converted_query": None,
                 }
-                input_check_ok = True
                 await call_callback("input_check_approved", "Input check bypassed.")
             else:
                 input_agent = get_input_check_agent(model_name)
@@ -763,11 +756,7 @@ class NewsAnalysisCoordinator:
                         "notification_message": None,
                         "converted_query": None,
                     }
-                input_check_ok = True
                 await call_callback("input_check_approved", "Input check completed.")
-
-            if not input_check_ok:
-                add_unresolved(input_agent.name, "input_check")
 
             action = input_check_result.get("action", "accept")
             if action == "reject_with_confirmation":
@@ -1221,7 +1210,6 @@ class NewsAnalysisCoordinator:
 
                 # Step 2: run one expert agent per domain in parallel, each audited
                 opinions = []
-                expert_statuses = []
 
                 async def run_one_expert(domain: str) -> AsyncGenerator[Event, None]:
                     expert_agent = get_domain_expert_agent(domain, model_name)
@@ -1266,7 +1254,6 @@ class NewsAnalysisCoordinator:
                         opinion, ok = res_expert_list[0]
                         if opinion:
                             opinions.append(opinion)
-                        expert_statuses.append(ok)
                         if not ok:
                             add_unresolved(expert_agent.name, "expert")
 

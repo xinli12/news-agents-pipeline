@@ -2294,10 +2294,9 @@ with st.expander("Settings", expanded=False):
         model_display = st.selectbox(
             "Model Selection",
             options=[
-                "Gemma 4 (Open Source)",
                 "Gemini 3.5 Flash (High)",
                 "Gemini 3.1 Flash Lite (Low-Cost)",
-                "Gemini 3.5 Pro (Premium)",
+                "Gemini 3.1 Pro Preview (Premium)",
             ],
             index=0,
             help="Select the underlying AI model for the agents.",
@@ -2305,15 +2304,14 @@ with st.expander("Settings", expanded=False):
         MODEL_MAPPING = {
             "Gemini 3.5 Flash (High)": "gemini-3.5-flash",
             "Gemini 3.1 Flash Lite (Low-Cost)": "gemini-3.1-flash-lite",
-            "Gemini 3.5 Pro (Premium)": "gemini-3.5-pro",
-            "Gemma 4 (Open Source)": "gemma-4-26b-a4b-it",
+            "Gemini 3.1 Pro Preview (Premium)": "gemini-3.1-pro-preview",
         }
         selected_model = MODEL_MAPPING[model_display]
     with settings_col_2:
         enable_editor = st.toggle(
             "Allow audit revisions",
             value=True,
-            help="User-facing analysis stages can revise up to two times; routing stages (input check, recruiter) get one before the safest available output is flagged.",
+            help="User-facing analysis stages can revise up to two times; the recruiter (routing) stage gets one. Input check has no audit gate.",
         )
 
 

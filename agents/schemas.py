@@ -127,11 +127,6 @@ class RoundtableSummary(pydantic.BaseModel):
     roundtable_summary: str
 
 
-class ExpertPanelCommentary(pydantic.BaseModel):
-    expert_opinions: list[ExpertOpinion]
-    roundtable_summary: str
-
-
 # --- Public Summary Report Model ---
 class ReportTakeaway(pydantic.BaseModel):
     point: str
