@@ -370,6 +370,70 @@ st.markdown(
         50% { transform: scale(1.08); }
         100% { transform: scale(1); }
     }
+    /* Custom tab styling: increase font size and distribute evenly */
+    div[data-testid="stTabs"] [role="tablist"],
+    div.stTabs [role="tablist"] {
+        display: flex !important;
+        width: 100% !important;
+        justify-content: space-between !important;
+    }
+    div[data-testid="stTabs"] [role="tab"],
+    div.stTabs [role="tab"],
+    div[data-testid="stTabs"] button[data-baseweb="tab"],
+    div.stTabs button[data-baseweb="tab"] {
+        flex-grow: 1 !important;
+        flex-basis: 0 !important;
+        text-align: center !important;
+    }
+    div[data-testid="stTabs"] [role="tab"],
+    div.stTabs [role="tab"],
+    div[data-testid="stTabs"] button[data-baseweb="tab"],
+    div.stTabs button[data-baseweb="tab"],
+    div[data-testid="stTabs"] [role="tab"] p,
+    div.stTabs [role="tab"] p {
+        font-size: 1.3rem !important;
+        font-weight: 700 !important;
+    }
+    div[data-testid="stTabs"] [role="tab"][aria-selected="true"],
+    div.stTabs [role="tab"][aria-selected="true"],
+    div[data-testid="stTabs"] [role="tab"][aria-selected="true"] p,
+    div.stTabs [role="tab"][aria-selected="true"] p {
+        color: var(--teal) !important;
+    }
+    /* Style dividers inside tabs for clear separation */
+    div[data-testid="stTabs"] hr {
+        margin: 2.2rem 0 !important;
+        border: 0 !important;
+        height: 1px !important;
+        background-color: var(--line) !important;
+        opacity: 0.8 !important;
+    }
+    /* Style section headings inside tabs to improve visual hierarchy */
+    div[data-testid="stTabs"] h3 {
+        margin-top: 1.8rem !important;
+        margin-bottom: 1.2rem !important;
+        color: var(--navy) !important;
+        font-weight: 700 !important;
+        border-bottom: 2px solid var(--teal) !important;
+        padding-bottom: 0.3rem !important;
+        display: inline-block !important;
+    }
+    div[data-testid="stTabs"] h4 {
+        margin-top: 1.8rem !important;
+        margin-bottom: 1rem !important;
+        color: var(--teal) !important;
+        font-weight: 650 !important;
+    }
+    /* Clear visual divider between left and right sections */
+    @media (min-width: 768px) {
+        div[data-testid="column"]:has(.left-section-divider) {
+            border-right: 1.5px solid var(--line);
+            padding-right: 2.5rem !important;
+        }
+        div[data-testid="column"]:has(.left-section-divider) + div[data-testid="column"] {
+            padding-left: 2.5rem !important;
+        }
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -928,16 +992,11 @@ def render_landscape(articles_data: dict) -> None:
     rows = article_rows(articles)
     df = pd.DataFrame(rows)
     total = len(rows)
-    source_balance = articles_data.get("source_balance") or {}
 
     st.metric("Sources", total)
 
     if articles_data.get("verification_summary"):
         st.info(articles_data["verification_summary"])
-
-    if source_balance:
-        with st.expander("Candidate pool balance", expanded=False):
-            st.json(source_balance)
 
     st.markdown("#### Source mix")
     counts = df["Perspective"].value_counts().reset_index()
@@ -1025,7 +1084,7 @@ def render_public_summary(results: dict) -> None:
 
 def render_consensus_and_timeline(facts: dict) -> None:
     consensus = facts.get("consensus_facts", [])
-    st.markdown("### Consensus facts")
+    st.markdown("#### Consensus facts")
     if not consensus:
         st.info("No cross-verified consensus facts were extracted.")
     for idx, item in enumerate(consensus, 1):
@@ -1044,7 +1103,7 @@ def render_consensus_and_timeline(facts: dict) -> None:
     timeline_count = len(structured_timeline) if structured_timeline else len(timeline)
 
     if timeline_count >= 2:
-        st.markdown("### Timeline")
+        st.markdown("#### Timeline")
         if structured_timeline:
             for event in structured_timeline:
                 with st.expander(
@@ -1374,6 +1433,7 @@ def render_experts_and_outlook(experts: dict, outlook: dict) -> None:
         if experts.get("roundtable_summary"):
             st.success(experts["roundtable_summary"])
 
+    st.divider()
     st.markdown("### Future outlook")
     render_outlook_scenarios(outlook)
 
@@ -1479,14 +1539,14 @@ def render_sources_section(results: dict, status: str) -> None:
         return
 
     render_landscape(articles_data)
-    st.divider()
+    st.markdown("#### Article catalog")
     render_source_table(articles)
 
 
 def render_facts_disputes_perspectives_section(
     results: dict, step_statuses: dict, status: str
 ) -> None:
-    st.markdown("### Facts, disputes, and perspectives")
+    st.markdown("### Facts")
     facts_data = results.get("facts") or {}
     narratives = results.get("narratives") or {}
     recruitment = results.get("recruitment") or {}
@@ -1512,7 +1572,7 @@ def render_facts_disputes_perspectives_section(
     profile_count = count_items(narratives.get("profiles"))
     axis = narratives.get("classification_axis") or "Pending"
 
-    st.markdown("#### Analysis module coverage")
+    st.divider()
     overview_cols = st.columns(4)
     overview_cols[0].metric(
         "Dispute Agent", "Recruited" if recruit_dispute else "Skipped"
@@ -1546,8 +1606,6 @@ def render_facts_disputes_perspectives_section(
     else:
         st.info("Dispute Agent was skipped by the Recruiter Agent.")
 
-    st.divider()
-
     if recruit_perspective:
         profiles = narratives.get("profiles") or []
         perspective_step = step_statuses.get("bias_agent")
@@ -1573,7 +1631,6 @@ def render_facts_disputes_perspectives_section(
 def render_expert_outlook_section(
     results: dict, step_statuses: dict, status: str
 ) -> None:
-    st.markdown("### Expert and outlook")
     recruitment = results.get("recruitment") or {}
     if not recruitment:
         if is_active_run(status):
@@ -1631,6 +1688,7 @@ def render_expert_outlook_section(
     ):
         st.info("No future outlook output is available from this partial run.")
     else:
+        st.divider()
         st.markdown("#### Future outlook")
         render_outlook_scenarios(outlook)
 
@@ -2079,7 +2137,7 @@ def render_restore_panel(snapshot: dict) -> None:
         snapshot_cols[1].metric("Saved", saved_at)
         snapshot_cols[2].metric("Status", str(status).title())
 
-        action_cols = st.columns(3)
+        action_cols = st.columns(2)
         if action_cols[0].button(
             "Restore latest analysis",
             type="primary",
@@ -2093,14 +2151,6 @@ def render_restore_panel(snapshot: dict) -> None:
             st.rerun()
 
         if action_cols[1].button("Start fresh", use_container_width=True):
-            st.session_state["skip_snapshot_restore"] = True
-            st.rerun()
-
-        if action_cols[2].button("Clear saved runs", use_container_width=True):
-            try:
-                clear_saved_runs()
-            except Exception:
-                logger.warning("Clearing saved run snapshots failed", exc_info=True)
             st.session_state["skip_snapshot_restore"] = True
             st.rerun()
 
@@ -2168,7 +2218,6 @@ if results.get("input_checked") is False:
     st.error("Input check rejected this request.")
     input_check = results.get("input_check_result") or {}
     render_input_check(input_check)
-    render_diagnostics(results, state)
     st.stop()
 
 if results.get("search_failed"):
@@ -2182,7 +2231,6 @@ if results.get("search_failed"):
         st.info(search_result["verification_summary"])
     for warning in search_result.get("warnings", []):
         st.warning(warning)
-    render_diagnostics(results, state)
     st.stop()
 
 
@@ -2274,11 +2322,10 @@ render_run_notices(results)
 
 analysis_col, briefing_col = st.columns([2.7, 1], gap="medium")
 with analysis_col:
+    st.markdown('<div class="left-section-divider"></div>', unsafe_allow_html=True)
     render_analysis_details_column(results, step_statuses, status)
 with briefing_col:
     render_briefing_column(results, status)
-
-render_diagnostics(results, state)
 
 
 # --- Polling / Auto-rerun Loop for Active Running status ---
