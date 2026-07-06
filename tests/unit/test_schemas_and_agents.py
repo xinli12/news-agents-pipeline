@@ -628,4 +628,3 @@ def test_run_agent_retries_immediately_and_injects_error_context() -> None:
     assert captured_prompts[0] == "Do the thing."
     assert captured_prompts[1].startswith("Do the thing.")
     assert "malformed structured output" in captured_prompts[1]
-
