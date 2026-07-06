@@ -57,8 +57,8 @@ class NewsAnalysisWorkflowAgent(BaseAgent):
             results = await coordinator.analyze(user_message)
 
             # Format report as markdown response
-            if not results.get("reviewed", True):
-                rejection = results.get("review_result", {})
+            if not results.get("input_checked", True):
+                rejection = results.get("input_check_result", {})
                 response_text = (
                     f"# Input Check Rejection\n\n"
                     f"**Action**: {rejection.get('action', 'reject_with_confirmation')}\n"
@@ -82,7 +82,7 @@ class NewsAnalysisWorkflowAgent(BaseAgent):
                 editor_logs = results.get("editor_logs", [])
 
                 response_text = ""
-                review_res = results.get("review_result", {})
+                review_res = results.get("input_check_result", {})
                 if review_res.get("action") == "accept_with_notification":
                     response_text += (
                         f"> [!WARNING]\n"

@@ -8,7 +8,7 @@ The project is intended for learning and experimentation only, not commercial us
 
 | Capability | Current implementation |
 | --- | --- |
-| Input review | Validates user input and returns one of four actions: Accept, Accept with notification, Reject with confirmation, or Convert. |
+| Input check | Validates user input and returns one of four actions: Accept, Accept with notification, Reject with confirmation, or Convert. |
 | Live search | Uses DuckDuckGo via `ddgs`, falls back from news search to text search, and builds a candidate pool of up to 40 raw results. |
 | Deduplication | Removes duplicate URLs and collapses likely wire-service or reprint clusters before analysis. |
 | Article enrichment | Scrapes selected articles with Jina Reader first, then BeautifulSoup/lxml as a fallback. |
@@ -65,7 +65,7 @@ hackathon/
 │   ├── fast_api_app.py           # ADK FastAPI server entrypoint used by Docker/tests
 │   ├── search_agent.py           # Search, dedupe, source classification
 │   ├── scraper.py                # Jina Reader + BeautifulSoup article scraping
-│   ├── review_agent.py           # Input review and query repair
+│   ├── input_check_agent.py      # Input check and query repair
 │   ├── recruiter_agent.py        # Optional module selection
 │   ├── fact_agent.py             # Consensus facts and timeline
 │   ├── dispute_agent.py          # Contested claims
