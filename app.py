@@ -393,7 +393,7 @@ def count_items(items: list | None) -> int:
 
 
 PIPELINE_STEPS = [
-    ("review", "Input Check"),
+    ("input_check", "Input Check"),
     ("search", "Source Search"),
     ("recruiter", "Orchestrator"),
     ("fact_bias", "Fact Extraction"),
@@ -411,8 +411,8 @@ CONTENT_LOADING_STATUSES = {"running", "paused"}
 
 def friendly_agent_name(name: str | None) -> str:
     display_names = {
-        "review_agent": "Input Check Agent",
-        "review": "Input Check Agent",
+        "input_check_agent": "Input Check Agent",
+        "input_check": "Input Check Agent",
         "search_agent": "Search Agent",
         "search": "Search Agent",
         "recruiter_agent": "Recruiter Agent",
@@ -545,7 +545,7 @@ def persist_run_snapshot(state: dict, context: str) -> None:
 
 def display_run_status(state: dict) -> str:
     results = state.get("results") or {}
-    if results.get("reviewed") is False:
+    if results.get("input_checked") is False:
         return "Input Rejected"
     if results.get("search_failed"):
         return "Search Failed"
@@ -560,7 +560,7 @@ def render_primary_progress(state: dict) -> None:
         status, step_statuses, state.get("current_step")
     )
     progress_status = status
-    if results.get("reviewed") is False:
+    if results.get("input_checked") is False:
         status_class = "failed"
         title = "Input check rejected"
         detail = "The request did not pass the input check."
@@ -610,10 +610,10 @@ def render_primary_progress(state: dict) -> None:
 
 
 def render_run_notices(results: dict) -> None:
-    review_res = results.get("review_result") or {}
-    if review_res.get("action") == "accept_with_notification":
+    input_check_res = results.get("input_check_result") or {}
+    if input_check_res.get("action") == "accept_with_notification":
         st.warning(
-            f"⚠️ **Input validation note**: {review_res.get('notification_message')}"
+            f"⚠️ **Input validation note**: {input_check_res.get('notification_message')}"
         )
 
     search_res = results.get("articles") or {}
@@ -724,15 +724,15 @@ def render_evidence_items(
         st.caption(f"{len(evidence) - max_items} more evidence items")
 
 
-def render_input_review(review: dict) -> None:
-    if not review:
+def render_input_check(input_check: dict) -> None:
+    if not input_check:
         return
-    action = review.get("action", "accept")
-    explanation = review.get("explanation", "")
-    notification = review.get("notification_message", "")
+    action = input_check.get("action", "accept")
+    explanation = input_check.get("explanation", "")
+    notification = input_check.get("notification_message", "")
 
     chips = [(action.replace("_", " ").title(), "good" if "accept" in action or action == "convert" else "warn")]
-    if review.get("is_news_related") is True:
+    if input_check.get("is_news_related") is True:
         chips.append(("News Relevant", "good"))
     else:
         chips.append(("Not News Relevant", "warn"))
@@ -1963,10 +1963,10 @@ def start_workflow(
             }
         ],
         "results": {
-            "reviewed": True,
+            "input_checked": True,
             "topic": topic_query,
             "optimized_query": topic_query,
-            "review_result": {},
+            "input_check_result": {},
             "articles": {},
             "recruitment": {},
             "facts": {},
@@ -1982,7 +1982,7 @@ def start_workflow(
         },
         "control": {"paused": False, "stopped": False},
         "step_statuses": {
-            "review": "queued",
+            "input_check": "queued",
             "search": "queued",
             "recruiter": "queued",
             "fact_bias": "queued",
@@ -2116,10 +2116,10 @@ if state.get("restored_snapshot"):
 render_primary_progress(state)
 
 # Check for immediate exits (Input Rejection or early search failures)
-if results.get("reviewed") is False:
+if results.get("input_checked") is False:
     st.error("Input check rejected this request.")
-    review = results.get("review_result") or {}
-    render_input_review(review)
+    input_check = results.get("input_check_result") or {}
+    render_input_check(input_check)
     render_diagnostics(results, state)
     st.stop()
 

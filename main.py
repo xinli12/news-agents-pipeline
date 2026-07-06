@@ -357,27 +357,27 @@ async def run_cli(topic: str):
         if status_spinner:
             status_spinner.stop()
 
-        # Check if the audit review rejected the query
-        if not results.get("reviewed", True):
-            review = results["review_result"]
-            console.print("\n[bold red]✖ Input Review Rejected![/bold red]")
+        # Check if the audit input check rejected the query
+        if not results.get("input_checked", True):
+            input_check = results["input_check_result"]
+            console.print("\n[bold red]✖ Input Check Rejected![/bold red]")
             console.print(
                 Panel(
-                    f"[bold]Action:[/bold] {review.get('action', 'reject_with_confirmation')}\n"
-                    f"[bold]Reason:[/bold] {review.get('explanation', 'Not news-relevant or safe.')}\n\n"
-                    f"{review.get('notification_message', '')}",
+                    f"[bold]Action:[/bold] {input_check.get('action', 'reject_with_confirmation')}\n"
+                    f"[bold]Reason:[/bold] {input_check.get('explanation', 'Not news-relevant or safe.')}\n\n"
+                    f"{input_check.get('notification_message', '')}",
                     title="Input Moderation Audit Result",
                     border_style="red",
                 )
             )
             return
 
-        review_res = results.get("review_result", {})
-        if review_res.get("action") == "accept_with_notification":
+        input_check_res = results.get("input_check_result", {})
+        if input_check_res.get("action") == "accept_with_notification":
             console.print(
                 Panel(
                     f"[bold yellow]⚠️ Input Validation Note[/bold yellow]\n\n"
-                    f"{review_res.get('notification_message')}",
+                    f"{input_check_res.get('notification_message')}",
                     title="Input Validation Warning",
                     border_style="yellow",
                 )
