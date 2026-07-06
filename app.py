@@ -428,8 +428,7 @@ def friendly_agent_name(name: str | None) -> str:
         "outlook": "Future Outlook Agent",
         "public_reporter_agent": "Public Reporter Agent",
         "public_report": "Public Reporter Agent",
-        "public_editor_agent": "Public Editor Agent",
-        "public_editor": "Public Editor Agent",
+        "public_editor": "Public Editor (deterministic renderer)",
     }
     key = str(name or "")
     if key.endswith("_audit"):
@@ -1928,7 +1927,7 @@ with st.expander("Settings", expanded=False):
         enable_editor = st.toggle(
             "Allow audit revisions",
             value=True,
-            help="Each audited stage can revise up to two times before the safest available output is flagged.",
+            help="User-facing analysis stages can revise up to two times; routing stages (input check, recruiter) get one before the safest available output is flagged.",
         )
 
 

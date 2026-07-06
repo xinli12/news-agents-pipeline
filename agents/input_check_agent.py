@@ -3,7 +3,7 @@ import os
 from google.adk.agents import Agent
 
 from agents.schemas import InputValidationResult
-from agents.scraper import scrape_article_text
+from agents.web_tools import scrape_article_text
 
 
 def get_input_check_agent(model_name: str | None = None) -> Agent:
