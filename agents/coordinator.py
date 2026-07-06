@@ -30,13 +30,14 @@ from agents.expert_agent import (
     get_roundtable_summarizer,
 )
 from agents.fact_agent import get_fact_agent
+from agents.input_check_agent import get_input_check_agent
 from agents.outlook_agent import get_outlook_agent
-from agents.public_editor_agent import get_public_editor_agent
 from agents.public_reporter_agent import get_public_reporter_agent
 from agents.recruiter_agent import get_recruiter_agent
-from agents.review_agent import get_input_check_agent
+from agents.report_renderer import render_public_editor_report
 from agents.schemas import AuditResult
 from agents.search_agent import get_search_agent
+from agents.web_tools import is_transient_error
 
 
 class WorkflowStoppedException(Exception):
@@ -47,9 +48,10 @@ class WorkflowStoppedException(Exception):
 # --- Audit Criteria Definitions ---
 INPUT_AUDIT_CRITERIA = (
     "1. The action must be exactly one of: 'accept', 'accept_with_notification', 'reject_with_confirmation', 'convert'.\n"
-    "2. If the input contains a URL or copy-pasted article, the action must be 'convert'.\n"
-    "3. If action is 'convert', check if the URL/article is news-related. If it is, converted_query must be populated. If it is not, the action must be 'reject_with_confirmation'.\n"
-    "4. If action is 'accept_with_notification' or 'reject_with_confirmation', notification_message must be populated."
+    "2. If the input does not contain a URL or a copy-pasted article or paragraph, the action must not be convert, and converted_query must be null.\n"
+    "3. If the input contains a URL or copy-pasted article, the action must be 'convert'.\n"
+    "4. If action is 'convert', check if the URL/article is news-related. If it is, converted_query must be populated. If it is not, the action must be 'reject_with_confirmation'.\n"
+    "5. If action is 'accept_with_notification' or 'reject_with_confirmation', notification_message must be populated."
 )
 
 
@@ -120,14 +122,6 @@ PUBLIC_REPORTER_AUDIT_CRITERIA = (
     "3. Preserve material caveats, unresolved audit warnings, and uncertainty in public-friendly language.\n"
     "4. Every key takeaway must carry an evidence trail (source, URL, quote) copied from upstream outputs."
 )
-
-PUBLIC_EDITOR_AUDIT_CRITERIA = (
-    "1. Ensure the highly condensed executive summary is at the absolute top of the page.\n"
-    "2. Ensure all detailed sections (disputes, narratives, expert opinions, timeline, scenarios) are folded inside HTML '<details>' and '<summary>' tags.\n"
-    "3. Verify there are no raw system JSONs, developer-facing debug strings, or internal agent annotations.\n"
-    "4. Ensure key claims link to their source articles (markdown links) and the report ends with a Sources section listing the cited URLs."
-)
-
 
 def get_audit_agent(
     agent_name: str, criteria: str, model_name: str | None = None
@@ -240,6 +234,8 @@ class NewsAnalysisCoordinator:
         if hasattr(agent, "instruction") and agent.instruction and not agent.instruction.startswith("The current date is"):
             agent.instruction = current_date_prefix + agent.instruction
 
+        current_prompt = prompt_text
+
         for attempt in range(1, max_retries + 1):
             started_at = time.perf_counter()
             usage_counts: dict[str, int] = {}
@@ -267,7 +263,7 @@ class NewsAnalysisCoordinator:
                     user_id="user",
                     session_id=agent_session_id,
                     new_message=types.Content(
-                        role="user", parts=[types.Part.from_text(text=prompt_text)]
+                        role="user", parts=[types.Part.from_text(text=current_prompt)]
                     ),
                 ):
                     usage_counts = merge_usage_counts(
@@ -316,16 +312,33 @@ class NewsAnalysisCoordinator:
                         e,
                     )
                     raise
-                backoff = 2**attempt
-                logger.warning(
-                    "Agent '%s' failed (attempt %d/%d): %s. Retrying in %ds...",
-                    agent.name,
-                    attempt,
-                    max_retries,
-                    e,
-                    backoff,
-                )
-                await asyncio.sleep(backoff)
+                if is_transient_error(e):
+                    backoff = 2**attempt
+                    logger.warning(
+                        "Agent '%s' hit a transient error (attempt %d/%d): %s. "
+                        "Retrying in %ds...",
+                        agent.name,
+                        attempt,
+                        max_retries,
+                        e,
+                        backoff,
+                    )
+                    await asyncio.sleep(backoff)
+                else:
+                    logger.warning(
+                        "Agent '%s' produced an unusable response (attempt %d/%d): %s. "
+                        "Retrying immediately with the error appended to the prompt...",
+                        agent.name,
+                        attempt,
+                        max_retries,
+                        e,
+                    )
+                    current_prompt = (
+                        f"{prompt_text}\n\n"
+                        f"NOTE: Your previous response could not be processed due to: "
+                        f"{e!s}\nEnsure your output is well-formed and matches the "
+                        "required schema exactly."
+                    )
 
     def _record_agent_runtime_metrics(
         self,
@@ -515,7 +528,7 @@ class NewsAnalysisCoordinator:
     ) -> dict:
         """Run the Input Check Agent synchronously to pre-audit user's input."""
         os.environ["CURRENT_MODEL"] = model_name
-        session_id = f"review_sess_{uuid.uuid4().hex[:8]}"
+        session_id = f"input_check_sess_{uuid.uuid4().hex[:8]}"
         await self.session_service.create_session(
             app_name="news_app", user_id="user", session_id=session_id
         )
@@ -526,7 +539,7 @@ class NewsAnalysisCoordinator:
             result = {
                 "action": "accept",
                 "is_news_related": True,
-                "explanation": "Failed to get review result.",
+                "explanation": "Failed to get input check result.",
                 "notification_message": None,
                 "converted_query": None,
             }
@@ -570,7 +583,7 @@ class NewsAnalysisCoordinator:
         # Initialize step statuses if control state is provided
         if control_state is not None:
             control_state["step_statuses"] = {
-                "review": "queued",
+                "input_check": "queued",
                 "search": "queued",
                 "recruiter": "queued",
                 "fact_bias": "queued",
@@ -589,7 +602,14 @@ class NewsAnalysisCoordinator:
         )
         editor_logs = []
         unresolved_audit_warnings = []
+        # High-risk, user-facing stages (search, fact/dispute/perspective, expert,
+        # outlook, public report) get the full revision budget since their output
+        # feeds directly into the final briefing. Low-risk routing/gating stages
+        # (input check, recruiter) only decide what runs next, not final content,
+        # so one revision is enough to catch a bad decision without doubling their
+        # LLM-call cost on every run.
         audit_revision_cycles = 2 if enable_editor else 0
+        light_revision_cycles = 1 if enable_editor else 0
 
         def add_unresolved(agent_name: str, step_name: str):
             related_logs = [
@@ -606,7 +626,7 @@ class NewsAnalysisCoordinator:
                 }
             )
 
-        review_result = {}
+        input_check_result = {}
         articles_data = None
         recruitment_result = None
         facts_data = None
@@ -623,52 +643,46 @@ class NewsAnalysisCoordinator:
             # Step 0: Input Check Agent
             await self._check_controls(control_state)
             if control_state is not None:
-                control_state["step_statuses"]["review"] = "running"
-            await call_callback("review", "Spawning Input Check Agent...")
+                control_state["step_statuses"]["input_check"] = "running"
+            await call_callback("input_check", "Spawning Input Check Agent...")
 
             if bypass_input_check:
-                review_result = {
+                input_check_result = {
                     "action": "accept",
                     "is_news_related": True,
                     "explanation": "Bypassed input check.",
                     "notification_message": None,
                     "converted_query": None,
                 }
-                review_ok = True
-                await call_callback("review_approved", "Input check bypassed.")
+                input_check_ok = True
+                await call_callback("input_check_approved", "Input check bypassed.")
             else:
                 input_agent = get_input_check_agent(model_name)
-
-                def review_prompt_gen(f, s):
-                    return f"Validate this input topic: '{topic}'" + (
-                        f"\n\nFeedback from Auditor: {f}\nSuggestions: {', '.join(s)}"
-                        if f
-                        else ""
-                    )
-
-                review_result, review_ok = await self._run_agent_with_audit(
-                    input_agent,
-                    review_prompt_gen,
-                    INPUT_AUDIT_CRITERIA,
-                    session_id,
-                    call_callback,
-                    "review",
-                    editor_logs,
-                    max_revision_cycles=audit_revision_cycles,
-                    control_state=control_state,
-                    model_name=model_name,
+                prompt_text = f"Validate this input topic: '{topic}'"
+                input_check_result = await self._run_agent(
+                    input_agent, prompt_text, session_id
                 )
+                if not input_check_result:
+                    input_check_result = {
+                        "action": "accept",
+                        "is_news_related": True,
+                        "explanation": "Failed to get input check result.",
+                        "notification_message": None,
+                        "converted_query": None,
+                    }
+                input_check_ok = True
+                await call_callback("input_check_approved", "Input check completed.")
 
-            if not review_ok:
-                add_unresolved(input_agent.name, "review")
+            if not input_check_ok:
+                add_unresolved(input_agent.name, "input_check")
 
-            action = review_result.get("action", "accept")
+            action = input_check_result.get("action", "accept")
             if action == "reject_with_confirmation":
                 if control_state is not None:
-                    control_state["step_statuses"]["review"] = "failed"
+                    control_state["step_statuses"]["input_check"] = "failed"
                 res = {
-                    "reviewed": False,
-                    "review_result": review_result,
+                    "input_checked": False,
+                    "input_check_result": input_check_result,
                     "editor_logs": editor_logs,
                     "audit_warnings": unresolved_audit_warnings,
                 }
@@ -677,22 +691,22 @@ class NewsAnalysisCoordinator:
                 return res
 
             if control_state is not None:
-                control_state["step_statuses"]["review"] = "completed"
+                control_state["step_statuses"]["input_check"] = "completed"
 
-            if action == "convert" and review_result.get("is_news_related", True):
-                optimized_query = review_result.get("converted_query") or topic
+            if action == "convert" and input_check_result.get("is_news_related", True):
+                optimized_query = input_check_result.get("converted_query") or topic
             else:
                 optimized_query = topic
 
             if results_dict is not None:
-                results_dict["review_result"] = review_result
+                results_dict["input_check_result"] = input_check_result
                 results_dict["optimized_query"] = optimized_query
-                results_dict["reviewed"] = True
+                results_dict["input_checked"] = True
 
             await call_callback(
-                "review_complete",
+                "input_check_complete",
                 f"Input check passed with action '{action}'. Query: '{optimized_query}'",
-                {"review_result": review_result},
+                {"input_check_result": input_check_result},
             )
 
             # Step 1: Search Agent
@@ -734,11 +748,11 @@ class NewsAnalysisCoordinator:
                 if control_state is not None:
                     control_state["step_statuses"]["search"] = "failed"
                 res = {
-                    "reviewed": True,
+                    "input_checked": True,
                     "search_failed": True,
                     "topic": topic,
                     "optimized_query": optimized_query,
-                    "review_result": review_result,
+                    "input_check_result": input_check_result,
                     "search_result": articles_data or {},
                     "editor_logs": editor_logs,
                     "audit_warnings": unresolved_audit_warnings,
@@ -759,11 +773,11 @@ class NewsAnalysisCoordinator:
                 if control_state is not None:
                     control_state["step_statuses"]["search"] = "failed"
                 res = {
-                    "reviewed": True,
+                    "input_checked": True,
                     "search_failed": True,
                     "topic": topic,
                     "optimized_query": optimized_query,
-                    "review_result": review_result,
+                    "input_check_result": input_check_result,
                     "search_result": articles_data,
                     "editor_logs": editor_logs,
                     "audit_warnings": unresolved_audit_warnings,
@@ -812,7 +826,7 @@ class NewsAnalysisCoordinator:
                 call_callback,
                 "recruiter",
                 editor_logs,
-                max_revision_cycles=audit_revision_cycles,
+                max_revision_cycles=light_revision_cycles,
                 control_state=control_state,
                 model_name=model_name,
             )
@@ -1285,51 +1299,30 @@ class NewsAnalysisCoordinator:
                 "public_report_complete", "Public report completed.", public_report
             )
 
-            # Step 9: Public Editor Agent (Consolidated Markdown Dashboard)
+            # Step 9: Consolidated Markdown Dashboard (deterministic renderer, no LLM)
+            #
+            # Folding upstream output into <details> blocks and building a Sources
+            # section is pure templating over already-audited data, so this runs as
+            # a direct function call instead of another agent + audit cycle.
             await self._check_controls(control_state)
             if control_state is not None:
                 control_state["step_statuses"]["public_editor"] = "running"
             await call_callback(
-                "public_editor",
-                "Spawning Public Editor Agent to build consolidated dashboard...",
-            )
-            public_editor_agent = get_public_editor_agent(model_name)
-
-            def public_editor_prompt_gen(f, s):
-                return (
-                    f"Topic: {topic}\n"
-                    f"Public Summary Report (with citations): {public_report}\n"
-                    f"Consensus & Facts: {facts_data}\n"
-                    f"Media Narratives: {bias_data}\n"
-                    f"Expert Commentary: {expert_data}\n"
-                    f"Future Scenarios: {outlook_data}\n"
-                    f"Unresolved Audit Warnings: {unresolved_audit_warnings}"
-                    + (
-                        f"\n\nFeedback from Auditor: {f}\nSuggestions: {', '.join(s)}"
-                        if f
-                        else ""
-                    )
-                )
-
-            public_editor_data, editor_ok = await self._run_agent_with_audit(
-                public_editor_agent,
-                public_editor_prompt_gen,
-                PUBLIC_EDITOR_AUDIT_CRITERIA,
-                session_id,
-                call_callback,
-                "public_editor",
-                editor_logs,
-                max_revision_cycles=audit_revision_cycles,
-                control_state=control_state,
-                model_name=model_name,
+                "public_editor", "Rendering consolidated dashboard report..."
             )
 
-            if not public_editor_data:
-                public_editor_data = {"markdown_report": "", "unresolved_warnings": []}
+            public_editor_data = render_public_editor_report(
+                topic,
+                public_report,
+                facts_data,
+                bias_data,
+                expert_data,
+                outlook_data,
+                articles_data,
+                unresolved_audit_warnings,
+            )
             public_editor_report = public_editor_data.get("markdown_report", "")
             public_editor_warnings = public_editor_data.get("unresolved_warnings", [])
-            if not editor_ok:
-                add_unresolved(public_editor_agent.name, "public_editor")
 
             if control_state is not None:
                 control_state["step_statuses"]["public_editor"] = "completed"
@@ -1357,10 +1350,10 @@ class NewsAnalysisCoordinator:
             )
 
             final_res = {
-                "reviewed": True,
+                "input_checked": True,
                 "topic": topic,
                 "optimized_query": optimized_query,
-                "review_result": review_result,
+                "input_check_result": input_check_result,
                 "articles": articles_data,
                 "recruitment": recruitment_result,
                 "facts": facts_data,
@@ -1385,12 +1378,12 @@ class NewsAnalysisCoordinator:
                     if status in ["queued", "running"]:
                         control_state["step_statuses"][step] = "stopped"
             partial_res = {
-                "reviewed": "review_result" in locals() and review_result is not None,
+                "input_checked": "input_check_result" in locals() and input_check_result is not None,
                 "topic": topic,
                 "optimized_query": optimized_query
                 if "optimized_query" in locals()
                 else topic,
-                "review_result": review_result if "review_result" in locals() else {},
+                "input_check_result": input_check_result if "input_check_result" in locals() else {},
                 "articles": articles_data if "articles_data" in locals() else {},
                 "recruitment": recruitment_result
                 if "recruitment_result" in locals()

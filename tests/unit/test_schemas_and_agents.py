@@ -419,31 +419,91 @@ def test_merge_disputed_claims_deduplicates_dispute_question_fallbacks() -> None
     assert merged[1]["side_a_assertion"] == "Officials say the deadline remains unchanged."
 
 
-def test_classify_topic_characteristics_and_selection_logic() -> None:
+def test_classify_search_results_combines_topic_and_bias_in_one_call() -> None:
     from unittest.mock import MagicMock, patch
 
-    from agents.search_agent import classify_topic_characteristics
+    from agents.search_agent import classify_search_results
 
-    # 1. Test classify_topic_characteristics
     with patch("google.genai.Client") as mock_client_cls:
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
         mock_response = MagicMock()
-        mock_response.text = '{"is_viewpoint_oriented": true, "complexity": "High"}'
+        mock_response.text = (
+            '{"is_viewpoint_oriented": true, "complexity": "High", '
+            '"article_bias": {"0": "left"}}'
+        )
         mock_client.models.generate_content.return_value = mock_response
 
-        res = classify_topic_characteristics("Some topic", [{"title": "Test"}])
+        res = classify_search_results(
+            "Some topic", [{"title": "Test", "url": "http://example.com/a"}]
+        )
         assert res["is_viewpoint_oriented"] is True
         assert res["complexity"] == "High"
+        assert res["article_bias"] == {"http://example.com/a": "LEFT"}
+        # A single combined call replaces what used to be two separate ones.
+        assert mock_client.models.generate_content.call_count == 1
 
-    # 2. Test get_live_news_articles selection logic branches
+
+def test_classify_search_results_retries_transient_errors_then_falls_back() -> None:
+    from unittest.mock import MagicMock, patch
+
+    from google.genai import errors as genai_errors
+
+    from agents.search_agent import classify_search_results
+
+    with patch("google.genai.Client") as mock_client_cls, patch("time.sleep") as mock_sleep:
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_client.models.generate_content.side_effect = genai_errors.ServerError(
+            503, {"error": {"message": "unavailable"}}
+        )
+
+        res = classify_search_results(
+            "Some topic", [{"title": "Test", "url": "http://example.com/a"}], max_retries=1
+        )
+
+        # One initial attempt + one retry = 2 calls, with a backoff sleep in between.
+        assert mock_client.models.generate_content.call_count == 2
+        mock_sleep.assert_called_once()
+        assert res == {
+            "is_viewpoint_oriented": False,
+            "complexity": "Moderate",
+            "article_bias": {},
+        }
+
+
+def test_classify_search_results_does_not_retry_content_errors() -> None:
+    from unittest.mock import MagicMock, patch
+
+    from agents.search_agent import classify_search_results
+
+    with patch("google.genai.Client") as mock_client_cls, patch("time.sleep") as mock_sleep:
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.text = "not valid json"
+        mock_client.models.generate_content.return_value = mock_response
+
+        res = classify_search_results(
+            "Some topic", [{"title": "Test", "url": "http://example.com/a"}], max_retries=1
+        )
+
+        # A malformed response will reproduce under the same prompt, so it
+        # should fail fast without burning a retry/backoff.
+        assert mock_client.models.generate_content.call_count == 1
+        mock_sleep.assert_not_called()
+        assert res["article_bias"] == {}
+
+
+def test_get_live_news_articles_selection_logic_branches() -> None:
+    from unittest.mock import MagicMock, patch
+
     from agents.search_agent import get_live_news_articles
 
-    # Mock ddgs, classify_topic_characteristics, classify_articles_bias_batch, scrape_articles_parallel
+    # Mock ddgs, classify_search_results, scrape_articles_parallel
     with patch("agents.search_agent.DDGS") as mock_ddgs, \
-         patch("agents.search_agent.classify_topic_characteristics") as mock_classify, \
-         patch("agents.search_agent.classify_articles_bias_batch") as mock_bias_batch, \
-         patch("agents.scraper.scrape_articles_parallel") as mock_scrape:
+         patch("agents.search_agent.classify_search_results") as mock_classify, \
+         patch("agents.web_tools.scrape_articles_parallel") as mock_scrape:
 
         # Setup mock search results
         mock_news = MagicMock()
@@ -459,11 +519,14 @@ def test_classify_topic_characteristics_and_selection_logic() -> None:
         mock_news.news.return_value = dummy_results
         mock_scrape.return_value = {}
 
-        # Case A: Factual-oriented (is_viewpoint_oriented = False, complexity = Simple)
-        mock_classify.return_value = {"is_viewpoint_oriented": False, "complexity": "Simple"}
-        mock_bias_batch.return_value = {
+        article_bias = {
             "http://left1": "LEFT", "http://right1": "RIGHT", "http://center1": "CENTER",
             "http://center2": "CENTER", "http://other1": "OTHER/NON-POLITICAL"
+        }
+
+        # Case A: Factual-oriented (is_viewpoint_oriented = False, complexity = Simple)
+        mock_classify.return_value = {
+            "is_viewpoint_oriented": False, "complexity": "Simple", "article_bias": article_bias
         }
 
         res_factual = get_live_news_articles("Factual Topic")
@@ -472,9 +535,13 @@ def test_classify_topic_characteristics_and_selection_logic() -> None:
         # The factual selection should prioritize wire service (Reuters / http://center2) and keep others in search order.
         # First article should be the wire service: Article Wire Center 2
         assert "Article #1\nTitle: Article Wire Center 2" in res_factual
+        # The pre-computed bias classification is surfaced to the agent instead of being discarded.
+        assert "Prior Bias Signal: CENTER" in res_factual
 
         # Case B: Viewpoint-oriented (is_viewpoint_oriented = True, complexity = High)
-        mock_classify.return_value = {"is_viewpoint_oriented": True, "complexity": "High"}
+        mock_classify.return_value = {
+            "is_viewpoint_oriented": True, "complexity": "High", "article_bias": article_bias
+        }
         res_viewpoint = get_live_news_articles("Viewpoint Topic")
         assert "TOPIC_TYPE: viewpoint-oriented" in res_viewpoint
         assert "TOPIC_COMPLEXITY: High" in res_viewpoint
@@ -483,3 +550,81 @@ def test_classify_topic_characteristics_and_selection_logic() -> None:
         assert "Article #1\nTitle: Article Left 1" in res_viewpoint
         assert "Article #2\nTitle: Article Right 1" in res_viewpoint
         assert "Article #3\nTitle: Article Center 1" in res_viewpoint
+
+
+def test_is_transient_error_classifies_api_vs_content_failures() -> None:
+    from google.genai import errors as genai_errors
+
+    from agents.web_tools import is_transient_error
+
+    server_error = genai_errors.ServerError(503, {"error": {"message": "unavailable"}})
+    assert is_transient_error(server_error) is True
+
+    rate_limited = genai_errors.ClientError(429, {"error": {"message": "rate limited"}})
+    assert is_transient_error(rate_limited) is True
+
+    bad_request = genai_errors.ClientError(400, {"error": {"message": "bad request"}})
+    assert is_transient_error(bad_request) is False
+
+    assert is_transient_error(ConnectionError("connection reset")) is True
+    assert is_transient_error(ValueError("malformed json")) is False
+    assert is_transient_error(KeyError("missing field")) is False
+
+
+def test_run_agent_retries_immediately_and_injects_error_context() -> None:
+    import asyncio
+    from unittest.mock import MagicMock, patch
+
+    from google.adk.agents import Agent
+
+    from agents.coordinator import NewsAnalysisCoordinator
+    from agents.schemas import AuditResult
+
+    coordinator = NewsAnalysisCoordinator()
+    agent = Agent(
+        name="dummy_agent",
+        model="gemini-3.1-flash-lite",
+        instruction="Say hello.",
+        output_schema=AuditResult,
+        output_key="audit_result",
+    )
+
+    captured_prompts = []
+    call_count = {"n": 0}
+
+    async def fake_run_async(*, user_id, session_id, new_message):
+        call_count["n"] += 1
+        captured_prompts.append(new_message.parts[0].text)
+        if call_count["n"] == 1:
+            raise ValueError("malformed structured output")
+        # InMemorySessionService.get_session() returns a copy, so mutating it
+        # would not persist; write directly into the service's backing store
+        # the way append_event() would, to simulate a successful agent turn.
+        stored_session = coordinator.session_service.sessions["news_app"]["user"][
+            session_id
+        ]
+        stored_session.state["audit_result"] = {
+            "is_approved": True,
+            "audit_feedback": [],
+            "recommended_fixes": [],
+        }
+        return
+        yield  # pragma: no cover - marks this as an async generator
+
+    mock_runner = MagicMock()
+    mock_runner.run_async = fake_run_async
+
+    with patch("agents.coordinator.Runner", return_value=mock_runner):
+        result = asyncio.run(
+            coordinator._run_agent(agent, "Do the thing.", "sess_test", max_retries=3)
+        )
+
+    assert result == {
+        "is_approved": True,
+        "audit_feedback": [],
+        "recommended_fixes": [],
+    }
+    assert call_count["n"] == 2
+    assert captured_prompts[0] == "Do the thing."
+    assert captured_prompts[1].startswith("Do the thing.")
+    assert "malformed structured output" in captured_prompts[1]

@@ -180,9 +180,3 @@ class FutureOutlookResult(pydantic.BaseModel):
 # --- Dispute Agent Models ---
 class DisputeList(pydantic.BaseModel):
     disputed_claims: list[DisputeItem]
-
-
-# --- Public Editor Models ---
-class PublicEditorOutput(pydantic.BaseModel):
-    markdown_report: str
-    unresolved_warnings: list[str] = pydantic.Field(default_factory=list)

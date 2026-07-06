@@ -81,135 +81,111 @@ def dedupe_candidate_pool(results: list[dict]) -> tuple[list[dict], list[str]]:
     return selected, sorted(set(wire_groups))
 
 
-def classify_articles_bias_batch(articles: list[dict]) -> dict[str, str]:
-    """Classifies the political bias of each article based on its title, source, and snippet using a batch Gemini call."""
+def classify_search_results(
+    topic: str, articles: list[dict], max_retries: int = 1
+) -> dict:
+    """Classifies topic type/complexity and every article's political bias in one Gemini call.
+
+    This used to be two sequential API calls (topic characteristics, then a
+    separate per-article bias batch) even though both read the same article
+    data and don't depend on each other's output, so they're combined here
+    into a single round trip. Transient API/network errors get one retry;
+    anything else falls back to a neutral default immediately since retrying
+    with an unchanged prompt is unlikely to fix it.
+    """
     if not articles:
-        return {}
-    try:
-        import os
+        return {"is_viewpoint_oriented": False, "complexity": "Simple", "article_bias": {}}
 
-        from google import genai
+    import os
+    import sys
+    import time
 
-        model_name = os.environ.get("CURRENT_MODEL", "gemini-3.1-flash-lite")
-        client = genai.Client()
+    from google import genai
 
-        # Prepare the list of articles for classification
-        articles_to_classify = []
-        for idx, art in enumerate(articles):
-            articles_to_classify.append(
-                {
-                    "id": idx,
-                    "title": art.get("title", "N/A"),
-                    "source": art.get("source", "N/A"),
-                    "snippet": art.get("body", "N/A"),
-                }
+    from agents.web_tools import is_transient_error
+
+    model_name = os.environ.get("CURRENT_MODEL", "gemini-3.1-flash-lite")
+    articles_to_classify = [
+        {
+            "id": idx,
+            "title": art.get("title", "N/A"),
+            "source": art.get("source", "N/A"),
+            "snippet": art.get("body", "N/A"),
+        }
+        for idx, art in enumerate(articles)
+    ]
+
+    prompt = (
+        f"Analyze the search topic '{topic}' and the following news search results.\n\n"
+        "Return a JSON object with exactly these keys:\n"
+        "1. 'is_viewpoint_oriented' (boolean): true if the topic/articles cover political, public policy, "
+        "legal, economic, or other topics with multiple conflicting or diverse viewpoints/interpretations; "
+        "false if the topic is non-political or primarily factual (e.g., sports, science, weather, "
+        "technology, or a single straightforward news event with little disagreement or analysis).\n"
+        "2. 'complexity' (string, one of 'Simple', 'Moderate', 'High'):\n"
+        "   - 'Simple': The search results primarily describe a single event with little disagreement or analysis.\n"
+        "   - 'Moderate': The search results cover multiple aspects of the topic, such as different stakeholders, analyses, or developments.\n"
+        "   - 'High': The search results reveal a complex, evolving, or controversial topic with multiple independent viewpoints.\n"
+        "3. 'article_bias' (object): a flat dictionary mapping each article's 'id' (as a string) to its "
+        "political/ideological bias classification, one of 'LEFT', 'RIGHT', 'CENTER', 'OTHER/NON-POLITICAL'.\n"
+        "   - 'LEFT': The article primarily frames issues from a progressive perspective, emphasizing themes such as social justice, government intervention, labor rights, environmental protection, or critiques of corporate power.\n"
+        "   - 'RIGHT': The article primarily frames issues from a conservative perspective, emphasizing themes such as free markets, limited government, or traditional values.\n"
+        "   - 'CENTER': The article reports facts in a balanced, descriptive, and neutral manner without clearly advocating a particular political perspective.\n"
+        "   - 'OTHER/NON-POLITICAL': The article is non-political (e.g., science, technology, sports, or entertainment), has no obvious political perspective, or presents a viewpoint that does not fit the other categories.\n\n"
+        "Do not include any formatting or explanation outside the JSON.\n\n"
+        f"Articles:\n{json.dumps(articles_to_classify, indent=2)}"
+    )
+
+    last_error: Exception | None = None
+    for attempt in range(1, max_retries + 2):
+        try:
+            client = genai.Client()
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config={"response_mime_type": "application/json"},
             )
+            result = json.loads(response.text)
 
-        prompt = (
-            "Analyze the following list of news articles (including their title, source, and search snippet) "
-            "and classify the political/ideological bias of each article as 'LEFT', 'RIGHT', 'CENTER', or 'OTHER/NON-POLITICAL'.\n"
-            "Classification guidelines:\n"
-            "- 'LEFT': The article primarily frames issues from a progressive perspective, emphasizing themes such as social justice, government intervention, labor rights, environmental protection, or critiques of corporate power.\n"
-            "- 'RIGHT': The article primarily frames issues from a conservative perspective, emphasizing themes such as free markets, limited government, or traditional values.\n"
-            "- 'CENTER': The article reports facts in a balanced, descriptive, and neutral manner without clearly advocating a particular political perspective.\n"
-            "- 'OTHER/NON-POLITICAL': The article is non-political (e.g., science, technology, sports, or entertainment), has no obvious political perspective, or presents a viewpoint that does not fit the other categories.\n\n"
-            "Respond strictly in JSON format as a flat dictionary mapping each article's 'id' (as a string) to its bias category.\n"
-            "Do not include any formatting or explanation outside the JSON.\n\n"
-            f"Articles:\n{json.dumps(articles_to_classify, indent=2)}"
-        )
+            is_viewpoint = bool(result.get("is_viewpoint_oriented", False))
+            complexity = str(result.get("complexity", "Moderate"))
+            if complexity not in ("Simple", "Moderate", "High"):
+                complexity = "Moderate"
 
-        response = client.models.generate_content(
-            model=model_name,
-            contents=prompt,
-            config={
-                "response_mime_type": "application/json",
-            },
-        )
-
-        result = json.loads(response.text)
-
-        # Map back from ID to URL
-        url_bias_map = {}
-        for k, v in result.items():
-            try:
-                idx = int(k)
+            url_bias_map = {}
+            for key, value in (result.get("article_bias") or {}).items():
+                try:
+                    idx = int(key)
+                except (TypeError, ValueError):
+                    continue
                 if 0 <= idx < len(articles):
                     url = articles[idx].get("url")
                     if url:
-                        url_bias_map[url] = v.upper()
-            except ValueError:
-                continue
-        return url_bias_map
-    except Exception as e:
-        import sys
+                        url_bias_map[url] = str(value).upper()
 
-        print(
-            f"Warning: Batch article classification failed: {e!s}. Falling back to default center/other classification.",
-            file=sys.stderr,
-        )
-        return {}
-
-
-def classify_topic_characteristics(topic: str, articles: list[dict]) -> dict:
-    """Determine if a topic/article pool is political/viewpoint-oriented vs non-political/factual,
-    and classify its complexity (Simple, Moderate, High).
-    """
-    if not articles:
-        return {"is_viewpoint_oriented": False, "complexity": "Simple"}
-    try:
-        import os
-
-        from google import genai
-
-        model_name = os.environ.get("CURRENT_MODEL", "gemini-3.1-flash-lite")
-        client = genai.Client()
-
-        # Prepare a sample of the articles for analyzing the topic characteristics
-        sample_articles = []
-        for idx, art in enumerate(articles[:10]):
-            sample_articles.append(
-                {
-                    "title": art.get("title", "N/A"),
-                    "source": art.get("source", "N/A"),
-                    "snippet": art.get("body", "N/A"),
-                }
+            return {
+                "is_viewpoint_oriented": is_viewpoint,
+                "complexity": complexity,
+                "article_bias": url_bias_map,
+            }
+        except Exception as e:
+            last_error = e
+            if attempt > max_retries or not is_transient_error(e):
+                break
+            backoff = 2**attempt
+            print(
+                f"Warning: Search result classification hit a transient error "
+                f"(attempt {attempt}/{max_retries + 1}): {e!s}. Retrying in {backoff}s...",
+                file=sys.stderr,
             )
+            time.sleep(backoff)
 
-        prompt = (
-            f"Analyze the search topic '{topic}' and the following sample of search results to determine:\n"
-            "1. Topic type classification:\n"
-            "   - 'viewpoint-oriented': If the topic/articles cover political, public policy, legal, economic, or other topics with multiple conflicting or diverse viewpoints/interpretations.\n"
-            "   - 'factual-oriented': If the topic is non-political or primarily factual (e.g., sports, science, weather, technology, or a single straightforward news event with little disagreement or analysis).\n"
-            "2. Complexity/diversity level:\n"
-            "   - 'Simple': The search results primarily describe a single event with little disagreement or analysis.\n"
-            "   - 'Moderate': The search results cover multiple aspects of the topic, such as different stakeholders, analyses, or developments.\n"
-            "   - 'High': The search results reveal a complex, evolving, or controversial topic with multiple independent viewpoints.\n\n"
-            "Respond strictly in JSON format as a dictionary with keys 'is_viewpoint_oriented' (boolean) and 'complexity' (string, either 'Simple', 'Moderate', or 'High').\n"
-            "Do not include any formatting or explanation outside the JSON.\n\n"
-            f"Sample articles:\n{json.dumps(sample_articles, indent=2)}"
-        )
-
-        response = client.models.generate_content(
-            model=model_name,
-            contents=prompt,
-            config={
-                "response_mime_type": "application/json",
-            },
-        )
-        res = json.loads(response.text)
-        is_viewpoint = bool(res.get("is_viewpoint_oriented", False))
-        complexity = str(res.get("complexity", "Moderate"))
-        if complexity not in ["Simple", "Moderate", "High"]:
-            complexity = "Moderate"
-        return {"is_viewpoint_oriented": is_viewpoint, "complexity": complexity}
-    except Exception as e:
-        import sys
-
-        print(
-            f"Warning: Topic classification failed: {e!s}. Falling back to default values.",
-            file=sys.stderr,
-        )
-        return {"is_viewpoint_oriented": False, "complexity": "Moderate"}
+    print(
+        f"Warning: Search result classification failed ({last_error!s}). "
+        "Falling back to default classification.",
+        file=sys.stderr,
+    )
+    return {"is_viewpoint_oriented": False, "complexity": "Moderate", "article_bias": {}}
 
 
 def get_live_news_articles(topic: str) -> str:
@@ -218,44 +194,67 @@ def get_live_news_articles(topic: str) -> str:
     Args:
         topic: The news topic or search query, e.g. 'Federal Reserve interest rate hike'.
     """
+    import sys
+
+    RAW_FETCH_TARGET = 55
+    THIN_PAGE_THRESHOLD = 20
+
     try:
         with DDGS() as ddgs:
-            # Fetch up to 35 articles to ensure we have a diverse pool to choose from
-            try:
-                results = list(ddgs.news(topic, max_results=35))
-            except Exception as news_err:
-                # Fallback to general text search if news search is rate-limited/blocked
-                import sys
+            results: list[dict] = []
 
+            # Fetch page 1 of news results. A second page is only pulled if page 1
+            # came back thin, since dedupe_candidate_pool collapses wire/reprint
+            # clusters below and a small raw pool often can't survive that intact.
+            try:
+                news_results = list(ddgs.news(topic, max_results=RAW_FETCH_TARGET))
+            except Exception as news_err:
                 print(
-                    f"Warning: ddgs.news search failed ({news_err!s}). Falling back to ddgs.text search...",
+                    f"Warning: ddgs.news search failed ({news_err!s}).",
                     file=sys.stderr,
                 )
+                news_results = []
+            results.extend(news_results)
+
+            if len(news_results) < THIN_PAGE_THRESHOLD:
                 try:
-                    text_results = list(ddgs.text(topic, max_results=35))
-                    results = []
-                    for r in text_results:
-                        url = r.get("href", "")
-                        domain = get_domain(url)
-                        # Extract a simple source name from domain (e.g. cnn.com -> Cnn)
-                        source_name = (
-                            domain.split(".")[0].capitalize()
-                            if domain
-                            else "Web Search"
-                        )
-                        results.append(
-                            {
-                                "title": r.get("title", "N/A"),
-                                "url": url,
-                                "source": source_name,
-                                "date": "N/A",
-                                "body": r.get("body", "N/A"),
-                            }
-                        )
-                except Exception as text_err:
-                    return (
-                        f"Error executing DuckDuckGo news and text search: {text_err!s}"
+                    results.extend(
+                        ddgs.news(topic, max_results=RAW_FETCH_TARGET, page=2)
                     )
+                except Exception as news_err2:
+                    print(
+                        f"Warning: ddgs.news page 2 search failed ({news_err2!s}).",
+                        file=sys.stderr,
+                    )
+
+            # Always widen with general text search too, instead of only falling
+            # back to it when ddgs.news raises -- a news call that succeeds but
+            # returns few results previously never got supplemented.
+            try:
+                text_results = list(ddgs.text(topic, max_results=RAW_FETCH_TARGET))
+            except Exception as text_err:
+                print(
+                    f"Warning: ddgs.text search failed ({text_err!s}).",
+                    file=sys.stderr,
+                )
+                text_results = []
+
+            for r in text_results:
+                url = r.get("href", "") or r.get("url", "")
+                domain = get_domain(url)
+                # Extract a simple source name from domain (e.g. cnn.com -> Cnn)
+                source_name = (
+                    domain.split(".")[0].capitalize() if domain else "Web Search"
+                )
+                results.append(
+                    {
+                        "title": r.get("title", "N/A"),
+                        "url": url,
+                        "source": source_name,
+                        "date": "N/A",
+                        "body": r.get("body", "N/A"),
+                    }
+                )
 
             if not results:
                 return (
@@ -276,27 +275,25 @@ def get_live_news_articles(topic: str) -> str:
                     "The search produced too few distinct news sources to support a multi-source analysis."
                 )
 
-            # Classify topic type and complexity
-            topic_info = classify_topic_characteristics(topic, results)
-            is_viewpoint = topic_info["is_viewpoint_oriented"]
-            complexity = topic_info["complexity"]
+            # Classify topic type/complexity and every article's bias in one call
+            classification = classify_search_results(topic, results)
+            is_viewpoint = classification["is_viewpoint_oriented"]
+            complexity = classification["complexity"]
+            articles_bias_map = classification["article_bias"]
 
             # Determine maximum articles to scrape based on complexity
             if complexity == "Simple":
-                max_to_scrape = 6
+                max_to_scrape = 8
             elif complexity == "Moderate":
-                max_to_scrape = 12
+                max_to_scrape = 15
             else:
-                max_to_scrape = 20
+                max_to_scrape = 24
 
             # Categorize the search results by their article-level bias dynamically
             lefts = []
             rights = []
             centers = []
             others = []
-
-            # Classify all articles in batch based on their content (title, source, snippet)
-            articles_bias_map = classify_articles_bias_batch(results)
 
             for r in results:
                 url = r.get("url", "")
@@ -351,7 +348,7 @@ def get_live_news_articles(topic: str) -> str:
             urls = [r.get("url") for r in selected_results if r.get("url")]
             scraped_contents = {}
             if urls:
-                from agents.scraper import scrape_articles_parallel
+                from agents.web_tools import scrape_articles_parallel
 
                 scraped_contents = scrape_articles_parallel(urls)
 
@@ -391,6 +388,7 @@ def get_live_news_articles(topic: str) -> str:
                     f"Outlet Group: {r.get('domain', '')}\n"
                     f"Wire Service: {r.get('wire_service') or 'None'}\n"
                     f"Duplicate Cluster: {r.get('duplicate_cluster', '')}\n"
+                    f"Prior Bias Signal: {articles_bias_map.get(url, 'UNKNOWN')}\n"
                     f"Content Snippet: {snippet}\n"
                     "---"
                 )
@@ -426,9 +424,9 @@ def get_search_agent(model_name: str | None = None) -> Agent:
             f"CRITICAL: Do not flag search results as fictional, hypothetical, or speculative solely because they describe events that occurred after your training data cutoff. If multiple credible, independent sources report an event as real news, treat it as authentic rather than as a hypothetical scenario.\n"
             f"CRITICAL: The number of articles you select and include in the 'articles' list MUST depend on the diversity and complexity of the search results "
             f"(or as many as possible if search results are limited), based on the 'TOPIC_COMPLEXITY' returned by the tool:\n"
-            f"- 'Simple' (primarily describes a single event with little disagreement or analysis): Select 3 to 6 articles.\n"
-            f"- 'Moderate' (covers multiple aspects of the topic, such as different stakeholders, analyses, or developments): Select 6 to 10 articles.\n"
-            f"- 'High' (reveals a complex, evolving, or controversial topic with multiple independent viewpoints): Select 10 to 15 articles.\n"
+            f"- 'Simple' (primarily describes a single event with little disagreement or analysis): Select 4 to 7 articles.\n"
+            f"- 'Moderate' (covers multiple aspects of the topic, such as different stakeholders, analyses, or developments): Select 8 to 12 articles.\n"
+            f"- 'High' (reveals a complex, evolving, or controversial topic with multiple independent viewpoints): Select 12 to 18 articles.\n"
             f"If the tool returns fewer unique articles than the target range, select as many available articles as possible.\n"
             f"CRITICAL: You must follow the selection logic and method based on 'TOPIC_TYPE' returned by the tool:\n"
             f"- If the TOPIC_TYPE is 'viewpoint-oriented' (covering political, public policy, legal, economic, or other topics with multiple viewpoints): "
@@ -441,7 +439,12 @@ def get_search_agent(model_name: str | None = None) -> Agent:
             f"Do not treat the same wire-service story or likely reprint cluster as independent corroboration. "
             f"Preserve duplicate_cluster and selection_rationale for each article when available.\n"
             f"For each article, you MUST determine:\n"
-            f"- bias_category: Classify based on the article's actual tone, framing, and content, NOT by publisher name alone. "
+            f"- bias_category: Each article comes with a 'Prior Bias Signal' computed from its title/source/search "
+            f"snippet before you saw the full scraped text. Treat it as a strong prior and use it as your answer "
+            f"by default. Only override it if the full scraped Content Snippet clearly contradicts it (you have "
+            f"more information than that prior signal did) -- do not silently re-derive a different answer from "
+            f"scratch without a concrete reason from the article text. Classify based on the article's actual tone, "
+            f"framing, and content, NOT by publisher name alone. "
             f"Use 'Left' if the article primarily frames issues from a progressive perspective, emphasizing themes such as social justice, government intervention, labor rights, environmental protection, or critiques of corporate power; "
             f"'Right' if the article primarily frames issues from a conservative perspective, emphasizing themes such as free markets, limited government, or traditional values; "
             f"'Center' if the article reports facts in a balanced, descriptive, and neutral manner without clearly advocating a particular political perspective; "
