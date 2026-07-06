@@ -329,8 +329,6 @@ def _verify_consensus_facts(
             )
 
 
-
-
 def _verify_disputes(
     container: dict[str, Any],
     path_prefix: str,
@@ -586,9 +584,6 @@ def _verify_public_report(
             )
             continue
         _verify_evidence_list(evidence_items, path, article_index, issues)
-
-
-
 
 
 def verify_analysis_evidence(

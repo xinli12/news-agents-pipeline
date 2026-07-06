@@ -83,8 +83,8 @@ custom_metrics:
               if response.strip().startswith("Rejected:"):
                   return {'score': 1.0, 'explanation': 'Rejected input does not require source diversity.'}
 
-              domains = set(re.findall(r"https?://(?:www\.)?([^/\\s\\)]+)", response))
-              source_blocks = re.findall(r"Sources?:\\s*([^\\n\\)]*)", response)
+              domains = set(re.findall(r"https?://(?:www\.)?([^/\s\)]+)", response))
+              source_blocks = re.findall(r"Sources?:\s*([^\n\)]*)", response)
               source_names = set()
               for block in source_blocks:
                   for source in block.split(","):
@@ -131,7 +131,7 @@ custom_metrics:
 
               url_count = len(re.findall(r"https?://", response))
               evidence_mentions = len(re.findall(r"evidence", response, flags=re.IGNORECASE))
-              quote_count = len(re.findall(r"Evidence quote:\\s*\"", response, flags=re.IGNORECASE))
+              quote_count = len(re.findall(r"Evidence quote:\s*\"", response, flags=re.IGNORECASE))
               has_consensus = "Consensus Facts" in response
               has_disputes = "Disputed Claims" in response
 

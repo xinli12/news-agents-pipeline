@@ -4,11 +4,13 @@ import logging
 import os
 import re
 import uuid
+from collections.abc import AsyncGenerator
 from typing import Any
 
-from google.adk.agents import Agent
-from google.adk.runners import Runner
+from google.adk.agents import Agent, InvocationContext, RunConfig
+from google.adk.events import Event
 from google.adk.sessions import InMemorySessionService
+from google.adk.utils.context_utils import Aclosing
 from google.genai import types
 
 from agents.bias_agent import get_bias_agent
@@ -33,10 +35,39 @@ from agents.search_agent import get_search_agent
 from agents.web_tools import is_transient_error
 
 
+async def merge_generators(*generators) -> AsyncGenerator[Event, None]:
+    """Helper to concurrently execute multiple async generators and yield their events."""
+    queue = asyncio.Queue()
+    finished_count = 0
+
+    async def worker(gen):
+        nonlocal finished_count
+        try:
+            async with Aclosing(gen) as g:
+                async for item in g:
+                    await queue.put(item)
+        finally:
+            finished_count += 1
+            if finished_count == len(generators):
+                await queue.put(None)  # Sentinel to stop
+
+    tasks = [asyncio.create_task(worker(gen)) for gen in generators]
+
+    while True:
+        item = await queue.get()
+        if item is None:
+            break
+        yield item
+
+    for t in tasks:
+        await t
+
+
 class WorkflowStoppedException(Exception):
     """Exception raised when the workflow is stopped by the user."""
 
     pass
+
 
 # --- Audit Criteria Definitions ---
 INPUT_AUDIT_CRITERIA = (
@@ -116,6 +147,7 @@ PUBLIC_REPORTER_AUDIT_CRITERIA = (
     "4. Every key takeaway must carry an evidence trail (source, URL, quote) copied from upstream outputs."
 )
 
+
 def get_audit_agent(
     agent_name: str, criteria: str, model_name: str | None = None
 ) -> Agent:
@@ -142,7 +174,6 @@ def get_audit_agent(
 
 
 # --- Coordination Helper Functions ---
-
 
 
 def _normalize_dispute_claim(claim: str) -> str:
@@ -194,68 +225,93 @@ class NewsAnalysisCoordinator:
             control_state["status"] = "running"
 
     async def _run_agent(
-        self, agent, prompt_text: str, session_id: str, max_retries: int = 3
-    ):
-        """Helper to invoke an ADK Agent using the Runner and retrieve the structured output state."""
+        self,
+        agent,
+        prompt_text: str,
+        ctx: InvocationContext,
+        out_result: list,
+        max_retries: int = 3,
+    ) -> AsyncGenerator[Event, None]:
+        """Helper to invoke an ADK Agent using native run_async and retrieve the structured output state."""
         logger = logging.getLogger(__name__)
 
+        # Dynamically register the agent as a subagent under the root workflow agent
+        if ctx.agent is not None and hasattr(ctx.agent, "sub_agents"):
+            parent_agent: Any = ctx.agent
+            sub_agents = parent_agent.sub_agents
+            if isinstance(sub_agents, list):
+                if not any(a.name == agent.name for a in sub_agents):
+                    sub_agents.append(agent)
+                    agent.parent_agent = ctx.agent
+
         import datetime
+
         now = datetime.datetime.now()
         now_utc = datetime.datetime.now(datetime.UTC)
-        local_date = now.strftime('%B %d, %Y')
-        utc_date = now_utc.strftime('%B %d, %Y')
+        local_date = now.strftime("%B %d, %Y")
+        utc_date = now_utc.strftime("%B %d, %Y")
         current_date_prefix = (
             f"The current date is {local_date} (local system time) / {utc_date} (UTC). "
             f"Note: news articles may be dated 1 day ahead or behind due to international timezone differences; "
             f"treat such minor discrepancies as valid and current, not as future events or hallucinations.\n"
             f"Do not treat real-world events that occur after your training data cutoff date as fictional, hypothetical, or speculative. If search results and evidence items report them as real news, treat them as authentic real-world events.\n\n"
         )
-        if hasattr(agent, "instruction") and agent.instruction and not agent.instruction.startswith("The current date is"):
+        if (
+            hasattr(agent, "instruction")
+            and agent.instruction
+            and not agent.instruction.startswith("The current date is")
+        ):
             agent.instruction = current_date_prefix + agent.instruction
 
         current_prompt = prompt_text
 
         for attempt in range(1, max_retries + 1):
             try:
-                agent_session_id = f"{session_id}_{agent.name}_{attempt}"
-
-                # Ensure session exists in the service
-                session = await self.session_service.get_session(
-                    app_name="news_app", user_id="user", session_id=agent_session_id
-                )
-                if session is None:
-                    await self.session_service.create_session(
-                        app_name="news_app", user_id="user", session_id=agent_session_id
-                    )
-
-                runner = Runner(
-                    agent=agent,
-                    app_name="news_app",
-                    session_service=self.session_service,
-                )
-
-                # Execute the agent run to completion
-                async for _event in runner.run_async(
-                    user_id="user",
-                    session_id=agent_session_id,
-                    new_message=types.Content(
+                # 1. Yield a user event representing the prompt to the current subagent.
+                # Scoped to parent ctx.branch so it appears in the right place in trace.
+                user_event = Event(
+                    invocation_id=ctx.invocation_id,
+                    author="user",
+                    branch=ctx.branch,
+                    content=types.Content(
                         role="user", parts=[types.Part.from_text(text=current_prompt)]
                     ),
-                ):
-                    pass
-
-                session = await self.session_service.get_session(
-                    app_name="news_app", user_id="user", session_id=agent_session_id
                 )
+                ctx.session.events.append(user_event)
+                yield user_event
 
+                # 2. Run the agent and yield its events. Capture the output_key
+                # value directly off each event's own state_delta as it streams,
+                # rather than reading ctx.session.state afterwards: concurrent
+                # sub-agents (see merge_generators) apply their state deltas on
+                # independent tasks, so a later shared-state read can race ahead
+                # of the delta that this very call just produced.
+                val = None
+                found_val = False
+                async with Aclosing(agent.run_async(ctx)) as agen:
+                    async for event in agen:
+                        if (
+                            agent.output_key
+                            and event.actions
+                            and agent.output_key in event.actions.state_delta
+                        ):
+                            val = event.actions.state_delta[agent.output_key]
+                            found_val = True
+                        yield event
+
+                # 3. Retrieve output value from session state
                 if agent.output_key:
-                    val = session.state.get(agent.output_key)
+                    if not found_val:
+                        val = ctx.session.state.get(agent.output_key)
                     if hasattr(val, "model_dump"):
-                        return val.model_dump()
+                        out_result.append(val.model_dump())
                     elif hasattr(val, "dict"):
-                        return val.dict()
-                    return val
-                return None
+                        out_result.append(val.dict())
+                    else:
+                        out_result.append(val)
+                else:
+                    out_result.append(None)
+                return
 
             except Exception as e:
                 if attempt == max_retries:
@@ -299,16 +355,17 @@ class NewsAnalysisCoordinator:
         agent,
         prompt_generator,
         criteria: str,
-        session_id: str,
+        ctx: InvocationContext,
         call_callback,
         step_name: str,
         editor_logs: list,
+        out_result: list,
         max_revision_cycles: int = 2,
         control_state: dict | None = None,
         model_name: str | None = None,
         deterministic_check=None,
         audit_context_generator=None,
-    ):
+    ) -> AsyncGenerator[Event, None]:
         feedback_text = ""
         suggestions = []
         output_data = None
@@ -317,7 +374,11 @@ class NewsAnalysisCoordinator:
         for attempt in range(1, max_attempts + 1):
             await self._check_controls(control_state)
             prompt_text = prompt_generator(feedback_text, suggestions)
-            output_data = await self._run_agent(agent, prompt_text, session_id)
+
+            res_list = []
+            async for event in self._run_agent(agent, prompt_text, ctx, res_list):
+                yield event
+            output_data = res_list[0] if res_list else None
 
             deterministic_report = None
             if deterministic_check:
@@ -348,16 +409,16 @@ class NewsAnalysisCoordinator:
 
             audit_context_parts = []
             if audit_context:
-                audit_context_parts.append(f"Additional audit context:\n{audit_context}")
+                audit_context_parts.append(
+                    f"Additional audit context:\n{audit_context}"
+                )
             if deterministic_report:
                 audit_context_parts.append(
                     "Deterministic verification report:\n"
                     f"{format_verification_report(deterministic_report)}"
                 )
             audit_context_text = (
-                "\n\n".join(audit_context_parts) + "\n\n"
-                if audit_context_parts
-                else ""
+                "\n\n".join(audit_context_parts) + "\n\n" if audit_context_parts else ""
             )
 
             # Spawn Audit Agent
@@ -372,7 +433,13 @@ class NewsAnalysisCoordinator:
             )
 
             await self._check_controls(control_state)
-            audit_result = await self._run_agent(audit_agent, audit_prompt, session_id)
+
+            audit_res_list = []
+            async for event in self._run_agent(
+                audit_agent, audit_prompt, ctx, audit_res_list
+            ):
+                yield event
+            audit_result = audit_res_list[0] if audit_res_list else None
 
             is_approved = (
                 audit_result.get("is_approved", False) if audit_result else False
@@ -392,11 +459,14 @@ class NewsAnalysisCoordinator:
                     "summary", "Deterministic verification failed."
                 )
                 feedback_items.insert(0, verification_feedback)
-                verification_fixes = [
-                    issue.get("fix") or issue.get("message", "")
-                    for issue in deterministic_report.get("issues", [])
-                    if issue.get("severity") == "error"
-                ]
+                issues_list = deterministic_report.get("issues", [])
+                verification_fixes = []
+                if isinstance(issues_list, list):
+                    for issue in issues_list:
+                        if isinstance(issue, dict):
+                            verification_fixes.append(
+                                issue.get("fix") or issue.get("message", "")
+                            )
                 suggestions = list(
                     dict.fromkeys(
                         [fix for fix in verification_fixes if fix] + suggestions
@@ -425,7 +495,8 @@ class NewsAnalysisCoordinator:
                     f"{step_name}_approved",
                     f"{agent.name} output approved by Audit Agent.",
                 )
-                return output_data, True
+                out_result.append((output_data, True))
+                return
 
             await call_callback(
                 f"{step_name}_rejected",
@@ -437,7 +508,7 @@ class NewsAnalysisCoordinator:
                 ),
             )
 
-        return output_data, False
+        out_result.append((output_data, False))
 
     async def run_input_check(
         self, topic: str, model_name: str = "gemini-3.1-flash-lite"
@@ -445,12 +516,27 @@ class NewsAnalysisCoordinator:
         """Run the Input Check Agent synchronously to pre-audit user's input."""
         os.environ["CURRENT_MODEL"] = model_name
         session_id = f"input_check_sess_{uuid.uuid4().hex[:8]}"
-        await self.session_service.create_session(
+        session = await self.session_service.get_session(
             app_name="news_app", user_id="user", session_id=session_id
+        )
+        if session is None:
+            session = await self.session_service.create_session(
+                app_name="news_app", user_id="user", session_id=session_id
+            )
+        ctx = InvocationContext(
+            invocation_id=f"e-{uuid.uuid4().hex[:8]}",
+            session_service=self.session_service,
+            session=session,
+            run_config=RunConfig(),
         )
         input_agent = get_input_check_agent(model_name)
         prompt_text = f"Validate this input topic: '{topic}'"
-        result = await self._run_agent(input_agent, prompt_text, session_id)
+
+        res_list = []
+        async for event in self._run_agent(input_agent, prompt_text, ctx, res_list):
+            await self.session_service.append_event(session, event)
+
+        result = res_list[0] if res_list else None
         if not result:
             result = {
                 "action": "accept",
@@ -471,6 +557,46 @@ class NewsAnalysisCoordinator:
         model_name: str = "gemini-3.1-flash-lite",
         bypass_input_check: bool = False,
     ) -> dict:
+        """Runs the news analysis pipeline and returns the final results map directly (for CLI/UI compatibility)."""
+        session_id = f"sess_{uuid.uuid4().hex[:8]}"
+        session = await self.session_service.get_session(
+            app_name="news_app", user_id="user", session_id=session_id
+        )
+        if session is None:
+            session = await self.session_service.create_session(
+                app_name="news_app", user_id="user", session_id=session_id
+            )
+        ctx = InvocationContext(
+            invocation_id=f"e-{uuid.uuid4().hex[:8]}",
+            session_service=self.session_service,
+            session=session,
+            run_config=RunConfig(),
+        )
+        local_results = results_dict if results_dict is not None else {}
+        async for event in self.analyze_async(
+            topic=topic,
+            ctx=ctx,
+            progress_callback=progress_callback,
+            enable_editor=enable_editor,
+            control_state=control_state,
+            results_dict=local_results,
+            model_name=model_name,
+            bypass_input_check=bypass_input_check,
+        ):
+            await self.session_service.append_event(session, event)
+        return local_results
+
+    async def analyze_async(
+        self,
+        topic: str,
+        ctx: InvocationContext,
+        progress_callback=None,
+        enable_editor: bool = True,
+        control_state: dict | None = None,
+        results_dict: dict[str, Any] | None = None,
+        model_name: str = "gemini-3.1-flash-lite",
+        bypass_input_check: bool = False,
+    ) -> AsyncGenerator[Event, None]:
         """Runs the news analysis pipeline sequentially with modular sub-agents and audit gates."""
         os.environ["CURRENT_MODEL"] = model_name
 
@@ -511,11 +637,6 @@ class NewsAnalysisCoordinator:
                 "public_editor": "queued",
             }
 
-        # Initialize unique session and logs
-        session_id = f"sess_{uuid.uuid4().hex[:8]}"
-        await self.session_service.create_session(
-            app_name="news_app", user_id="user", session_id=session_id
-        )
         editor_logs = []
         unresolved_audit_warnings = []
         # High-risk, user-facing stages (search, fact/dispute/perspective, expert,
@@ -574,20 +695,31 @@ class NewsAnalysisCoordinator:
                 await call_callback("input_check_approved", "Input check bypassed.")
             else:
                 input_agent = get_input_check_agent(model_name)
-                prompt_text = f"Validate this input topic: '{topic}'"
-                input_check_result = await self._run_agent(
-                    input_agent, prompt_text, session_id
-                )
-                if not input_check_result:
-                    input_check_result = {
-                        "action": "accept",
-                        "is_news_related": True,
-                        "explanation": "Failed to get input check result.",
-                        "notification_message": None,
-                        "converted_query": None,
-                    }
-                input_check_ok = True
-                await call_callback("input_check_approved", "Input check completed.")
+
+                def input_check_prompt_gen(f, s):
+                    return f"Validate this input topic: '{topic}'" + (
+                        f"\n\nFeedback from Auditor: {f}\nSuggestions: {', '.join(s)}"
+                        if f
+                        else ""
+                    )
+
+                input_check_list = []
+                async for event in self._run_agent_with_audit(
+                    input_agent,
+                    input_check_prompt_gen,
+                    INPUT_AUDIT_CRITERIA,
+                    ctx,
+                    call_callback,
+                    "input_check",
+                    editor_logs,
+                    input_check_list,
+                    max_revision_cycles=light_revision_cycles,
+                    control_state=control_state,
+                    model_name=model_name,
+                ):
+                    yield event
+                if input_check_list:
+                    input_check_result, input_check_ok = input_check_list[0]
 
             if not input_check_ok:
                 add_unresolved(input_agent.name, "input_check")
@@ -604,7 +736,7 @@ class NewsAnalysisCoordinator:
                 }
                 if results_dict is not None:
                     results_dict.update(res)
-                return res
+                return
 
             if control_state is not None:
                 control_state["step_statuses"]["input_check"] = "completed"
@@ -644,18 +776,23 @@ class NewsAnalysisCoordinator:
                     )
                 )
 
-            articles_data, search_ok = await self._run_agent_with_audit(
+            search_list = []
+            async for event in self._run_agent_with_audit(
                 search_agent,
                 search_prompt_gen,
                 SEARCH_AUDIT_CRITERIA,
-                session_id,
+                ctx,
                 call_callback,
                 "search",
                 editor_logs,
+                search_list,
                 max_revision_cycles=audit_revision_cycles,
                 control_state=control_state,
                 model_name=model_name,
-            )
+            ):
+                yield event
+            if search_list:
+                articles_data, search_ok = search_list[0]
 
             if not search_ok:
                 add_unresolved(search_agent.name, "search")
@@ -676,7 +813,7 @@ class NewsAnalysisCoordinator:
                 }
                 if results_dict is not None:
                     results_dict.update(res)
-                return res
+                return
 
             search_status = str(articles_data.get("search_status", "verified")).lower()
             if search_status in {
@@ -701,7 +838,7 @@ class NewsAnalysisCoordinator:
                 }
                 if results_dict is not None:
                     results_dict.update(res)
-                return res
+                return
 
             if articles_data.get("corrected_query"):
                 optimized_query = articles_data["corrected_query"]
@@ -734,18 +871,23 @@ class NewsAnalysisCoordinator:
                     )
                 )
 
-            recruitment_result, recruit_ok = await self._run_agent_with_audit(
+            recruiter_list = []
+            async for event in self._run_agent_with_audit(
                 recruiter_agent,
                 recruiter_prompt_gen,
                 RECRUITER_AUDIT_CRITERIA,
-                session_id,
+                ctx,
                 call_callback,
                 "recruiter",
                 editor_logs,
+                recruiter_list,
                 max_revision_cycles=light_revision_cycles,
                 control_state=control_state,
                 model_name=model_name,
-            )
+            ):
+                yield event
+            if recruiter_list:
+                recruitment_result, recruit_ok = recruiter_list[0]
 
             if not recruitment_result:
                 recruitment_result = {
@@ -805,7 +947,7 @@ class NewsAnalysisCoordinator:
             }
             bias_ok = True
 
-            async def run_fact_agent():
+            async def run_fact_agent() -> AsyncGenerator[Event, None]:
                 nonlocal facts_data, fact_ok
                 await self._check_controls(control_state)
                 if control_state is not None:
@@ -823,24 +965,26 @@ class NewsAnalysisCoordinator:
                         )
                     )
 
-                res_facts, ok = await self._run_agent_with_audit(
+                res_facts_list = []
+                async for event in self._run_agent_with_audit(
                     fact_agent,
                     fact_prompt_gen,
                     FACT_AUDIT_CRITERIA,
-                    session_id,
+                    ctx,
                     call_callback,
                     "fact_bias",
                     editor_logs,
+                    res_facts_list,
                     max_revision_cycles=audit_revision_cycles,
                     control_state=control_state,
                     model_name=model_name,
                     deterministic_check=lambda output: verify_analysis_evidence(
                         articles_data, facts_data=output
                     ),
-                )
-                if res_facts:
-                    facts_data = res_facts
-                fact_ok = ok
+                ):
+                    yield event
+                if res_facts_list:
+                    facts_data, fact_ok = res_facts_list[0]
                 if not fact_ok:
                     add_unresolved(fact_agent.name, "fact_bias")
                 if control_state is not None:
@@ -848,7 +992,7 @@ class NewsAnalysisCoordinator:
                 if results_dict is not None:
                     results_dict["facts"] = facts_data
 
-            async def run_dispute_agent():
+            async def run_dispute_agent() -> AsyncGenerator[Event, None]:
                 nonlocal dispute_data, dispute_ok
                 if recruitment_result.get("recruit_dispute", True):
                     await self._check_controls(control_state)
@@ -867,24 +1011,26 @@ class NewsAnalysisCoordinator:
                             )
                         )
 
-                    res_dispute, ok = await self._run_agent_with_audit(
+                    res_dispute_list = []
+                    async for event in self._run_agent_with_audit(
                         dispute_agent,
                         dispute_prompt_gen,
                         DISPUTE_AUDIT_CRITERIA,
-                        session_id,
+                        ctx,
                         call_callback,
                         "dispute",
                         editor_logs,
+                        res_dispute_list,
                         max_revision_cycles=audit_revision_cycles,
                         control_state=control_state,
                         model_name=model_name,
                         deterministic_check=lambda output: verify_analysis_evidence(
                             articles_data, dispute_data=output
                         ),
-                    )
-                    if res_dispute:
-                        dispute_data = res_dispute
-                    dispute_ok = ok
+                    ):
+                        yield event
+                    if res_dispute_list:
+                        dispute_data, dispute_ok = res_dispute_list[0]
                     if not dispute_ok:
                         add_unresolved(dispute_agent.name, "dispute")
                     if control_state is not None:
@@ -893,7 +1039,7 @@ class NewsAnalysisCoordinator:
                         "dispute_complete", "Disputes mapped successfully."
                     )
 
-            async def run_perspective_agent():
+            async def run_perspective_agent() -> AsyncGenerator[Event, None]:
                 nonlocal bias_data, bias_ok
                 if recruitment_result.get("recruit_perspective", True):
                     await self._check_controls(control_state)
@@ -917,24 +1063,26 @@ class NewsAnalysisCoordinator:
                             )
                         )
 
-                    res_bias, ok = await self._run_agent_with_audit(
+                    res_bias_list = []
+                    async for event in self._run_agent_with_audit(
                         bias_agent,
                         bias_prompt_gen,
                         PERSPECTIVE_AUDIT_CRITERIA,
-                        session_id,
+                        ctx,
                         call_callback,
                         "bias_agent",
                         editor_logs,
+                        res_bias_list,
                         max_revision_cycles=audit_revision_cycles,
                         control_state=control_state,
                         model_name=model_name,
                         deterministic_check=lambda output: verify_analysis_evidence(
                             articles_data, narratives_data=output
                         ),
-                    )
-                    if res_bias:
-                        bias_data = res_bias
-                    bias_ok = ok
+                    ):
+                        yield event
+                    if res_bias_list:
+                        bias_data, bias_ok = res_bias_list[0]
                     if not bias_ok:
                         add_unresolved(bias_agent.name, "bias_agent")
                     if control_state is not None:
@@ -942,10 +1090,11 @@ class NewsAnalysisCoordinator:
                     if results_dict is not None:
                         results_dict["narratives"] = bias_data
 
-            # Execute parallel Group 1
-            await asyncio.gather(
+            # Execute parallel Group 1 and yield all events
+            async for event in merge_generators(
                 run_fact_agent(), run_dispute_agent(), run_perspective_agent()
-            )
+            ):
+                yield event
 
             # Expose the Dispute Agent's claims on facts_data for dashboard compatibility
             if not dispute_data:
@@ -987,7 +1136,7 @@ class NewsAnalysisCoordinator:
             }
             outlook_ok = True
 
-            async def run_expert_agent():
+            async def run_expert_agent() -> AsyncGenerator[Event, None]:
                 nonlocal expert_data, expert_ok
                 if not recruitment_result.get("recruit_expert", True):
                     return
@@ -998,7 +1147,8 @@ class NewsAnalysisCoordinator:
 
                 # Step 1: pick 2-3 expert domains for this topic
                 selector = get_expert_domain_selector(model_name)
-                selection = await self._run_agent(
+                selection_list = []
+                async for event in self._run_agent(
                     selector,
                     (
                         f"Topic: {topic}\n"
@@ -1006,8 +1156,12 @@ class NewsAnalysisCoordinator:
                         f"Disputes: {dispute_data}\n"
                         "Select the 2-3 most appropriate expert domains."
                     ),
-                    session_id,
-                )
+                    ctx,
+                    selection_list,
+                ):
+                    yield event
+                selection = selection_list[0] if selection_list else {}
+
                 domains = [
                     str(domain).strip()
                     for domain in (selection or {}).get("domains") or []
@@ -1021,7 +1175,11 @@ class NewsAnalysisCoordinator:
                 )
 
                 # Step 2: run one expert agent per domain in parallel, each audited
-                async def run_one_expert(domain: str):
+                opinions = []
+                expert_statuses = []
+
+                async def run_one_expert(domain: str) -> AsyncGenerator[Event, None]:
+                    nonlocal expert_ok
                     expert_agent = get_domain_expert_agent(domain, model_name)
 
                     def expert_prompt_gen(f, s):
@@ -1038,14 +1196,16 @@ class NewsAnalysisCoordinator:
                             )
                         )
 
-                    opinion, ok = await self._run_agent_with_audit(
+                    res_expert_list = []
+                    async for event in self._run_agent_with_audit(
                         expert_agent,
                         expert_prompt_gen,
                         EXPERT_AUDIT_CRITERIA,
-                        session_id,
+                        ctx,
                         call_callback,
                         "expert",
                         editor_logs,
+                        res_expert_list,
                         max_revision_cycles=audit_revision_cycles,
                         control_state=control_state,
                         model_name=model_name,
@@ -1056,26 +1216,36 @@ class NewsAnalysisCoordinator:
                             },
                             reference_text=reference_text,
                         ),
-                    )
-                    if not ok:
-                        add_unresolved(expert_agent.name, "expert")
-                    return opinion, ok
+                    ):
+                        yield event
+                    if res_expert_list:
+                        opinion, ok = res_expert_list[0]
+                        if opinion:
+                            opinions.append(opinion)
+                        expert_statuses.append(ok)
+                        if not ok:
+                            add_unresolved(expert_agent.name, "expert")
 
-                expert_results = await asyncio.gather(
+                async for event in merge_generators(
                     *(run_one_expert(domain) for domain in domains)
-                )
-                opinions = [opinion for opinion, _ in expert_results if opinion]
-                expert_ok = all(ok for _, ok in expert_results)
+                ):
+                    yield event
+
+                expert_ok = all(expert_statuses)
 
                 # Step 3: moderator synthesizes the roundtable summary
                 roundtable_summary = ""
                 if opinions:
                     summarizer = get_roundtable_summarizer(model_name)
-                    summary_result = await self._run_agent(
+                    summarizer_list = []
+                    async for event in self._run_agent(
                         summarizer,
                         f"Topic: {topic}\nExpert commentaries:\n{json.dumps(opinions, ensure_ascii=True)}",
-                        session_id,
-                    )
+                        ctx,
+                        summarizer_list,
+                    ):
+                        yield event
+                    summary_result = summarizer_list[0] if summarizer_list else {}
                     roundtable_summary = (summary_result or {}).get(
                         "roundtable_summary", ""
                     )
@@ -1095,7 +1265,7 @@ class NewsAnalysisCoordinator:
                     expert_data,
                 )
 
-            async def run_outlook_agent():
+            async def run_outlook_agent() -> AsyncGenerator[Event, None]:
                 nonlocal outlook_data, outlook_ok
                 if recruitment_result.get("recruit_future_outlook", True):
                     await self._check_controls(control_state)
@@ -1114,24 +1284,26 @@ class NewsAnalysisCoordinator:
                             )
                         )
 
-                    res_outlook, ok = await self._run_agent_with_audit(
+                    res_outlook_list = []
+                    async for event in self._run_agent_with_audit(
                         outlook_agent,
                         outlook_prompt_gen,
                         OUTLOOK_AUDIT_CRITERIA,
-                        session_id,
+                        ctx,
                         call_callback,
                         "outlook",
                         editor_logs,
+                        res_outlook_list,
                         max_revision_cycles=audit_revision_cycles,
                         control_state=control_state,
                         model_name=model_name,
                         deterministic_check=lambda output: verify_analysis_evidence(
                             articles_data, outlook_data=output
                         ),
-                    )
-                    if res_outlook:
-                        outlook_data = res_outlook
-                    outlook_ok = ok
+                    ):
+                        yield event
+                    if res_outlook_list:
+                        outlook_data, outlook_ok = res_outlook_list[0]
                     if not outlook_ok:
                         add_unresolved(outlook_agent.name, "outlook")
                     if control_state is not None:
@@ -1139,11 +1311,14 @@ class NewsAnalysisCoordinator:
                     if results_dict is not None:
                         results_dict["outlook"] = outlook_data
                     await call_callback(
-                        "outlook_complete", "Future scenarios generated."
+                        "outlook_complete", "Future scenarios generated.", outlook_data
                     )
 
-            # Execute parallel Group 2
-            await asyncio.gather(run_expert_agent(), run_outlook_agent())
+            # Execute parallel Group 2 and yield all events
+            async for event in merge_generators(
+                run_expert_agent(), run_outlook_agent()
+            ):
+                yield event
 
             # Step 8: Public Reporter Agent
             await self._check_controls(control_state)
@@ -1182,14 +1357,16 @@ class NewsAnalysisCoordinator:
                     ensure_ascii=True,
                 )
 
-            public_report, public_report_ok = await self._run_agent_with_audit(
+            public_report_list = []
+            async for event in self._run_agent_with_audit(
                 public_reporter,
                 public_report_prompt_gen,
                 PUBLIC_REPORTER_AUDIT_CRITERIA,
-                session_id,
+                ctx,
                 call_callback,
                 "public_report",
                 editor_logs,
+                public_report_list,
                 max_revision_cycles=audit_revision_cycles,
                 control_state=control_state,
                 model_name=model_name,
@@ -1197,7 +1374,10 @@ class NewsAnalysisCoordinator:
                     articles_data, report_data=output
                 ),
                 audit_context_generator=public_report_audit_context,
-            )
+            ):
+                yield event
+            if public_report_list:
+                public_report, public_report_ok = public_report_list[0]
             if not public_report_ok:
                 add_unresolved(public_reporter.name, "public_report")
 
@@ -1281,7 +1461,7 @@ class NewsAnalysisCoordinator:
             }
             if results_dict is not None:
                 results_dict.update(final_res)
-            return final_res
+            return
 
         except WorkflowStoppedException:
             # Update statuses
@@ -1290,12 +1470,15 @@ class NewsAnalysisCoordinator:
                     if status in ["queued", "running"]:
                         control_state["step_statuses"][step] = "stopped"
             partial_res = {
-                "input_checked": "input_check_result" in locals() and input_check_result is not None,
+                "input_checked": "input_check_result" in locals()
+                and input_check_result is not None,
                 "topic": topic,
                 "optimized_query": optimized_query
                 if "optimized_query" in locals()
                 else topic,
-                "input_check_result": input_check_result if "input_check_result" in locals() else {},
+                "input_check_result": input_check_result
+                if "input_check_result" in locals()
+                else {},
                 "articles": articles_data if "articles_data" in locals() else {},
                 "recruitment": recruitment_result
                 if "recruitment_result" in locals()
@@ -1318,7 +1501,7 @@ class NewsAnalysisCoordinator:
             }
             if results_dict is not None:
                 results_dict.update(partial_res)
-            return partial_res
+            return
         except Exception as e:
             if control_state is not None:
                 for step, status in list(control_state["step_statuses"].items()):
