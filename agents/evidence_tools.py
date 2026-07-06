@@ -160,7 +160,9 @@ def _candidate_article_entries(
         for key, value in article_lookup.items()
         if normalize_text_for_matching(str(key)) in preferred_keys
     ]
-    return matched_entries or [(str(key), value) for key, value in article_lookup.items()]
+    return matched_entries or [
+        (str(key), value) for key, value in article_lookup.items()
+    ]
 
 
 def validate_evidence_item(
@@ -218,7 +220,9 @@ def validate_evidence_item(
             quote_score = 0.0
             warnings.append("quote lookup did not contain candidate snippets")
 
-    score = completeness_score if quote_score is None else completeness_score * quote_score
+    score = (
+        completeness_score if quote_score is None else completeness_score * quote_score
+    )
     status = "valid" if not warnings else "warning"
 
     return {
@@ -281,7 +285,9 @@ def _metadata_counter(items: list[dict], field: str) -> Counter[str]:
 
 
 def _independence_key(item: dict) -> str:
-    duplicate_cluster = normalize_text_for_matching(_field_value(item, "duplicate_cluster"))
+    duplicate_cluster = normalize_text_for_matching(
+        _field_value(item, "duplicate_cluster")
+    )
     if duplicate_cluster:
         return f"cluster:{duplicate_cluster}"
 
