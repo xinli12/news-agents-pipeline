@@ -27,7 +27,7 @@ def get_input_check_agent(model_name: str | None = None) -> Agent:
             "(e.g., 'taxes', 'climate change', 'Keir Starmer'). Set action to 'accept_with_notification', is_news_related to true, "
             "provide a helpful notification_message advising the user that a more specific query will yield better results, and set converted_query to null "
             "(e.g. 'Your query is very broad; specifying a recent event or region will help narrow down the search').\n"
-            "3. Reject_with_confirmation: Use when the input is not news-related (e.g., homework, programming questions, math, "
+            "3. Reject_with_confirmation: Use only when the input is clearly and confidently determined to be not news-related (e.g., homework, programming questions, math, "
             "definitions like 'What is a Fourier transform?', or general chat). Set action to 'reject_with_confirmation', "
             "is_news_related to false, set converted_query to null, and populate notification_message asking the user if they want to revise their query to add news context.\n"
             "4. Convert: Use ONLY when the input contains a URL or a full article copy-paste.\n"
