@@ -2452,7 +2452,7 @@ def render_restore_panel(snapshot: dict) -> None:
 with st.form("analysis_form"):
     topic = st.text_area(
         "Topic, headline, URL, or article text",
-        placeholder="Example: Keir Starmer latest resignation rumors",
+        placeholder='Example: "Tech Giant Claims New AI Model Achieves Human-Level Reasoning in Internal Tests"',
         height=90,
     )
     submit = st.form_submit_button(
