@@ -2,13 +2,11 @@ import argparse
 import asyncio
 import logging
 import os
-import re
 import sys
 
 from dotenv import load_dotenv
 from rich.columns import Columns
 from rich.console import Console
-from rich.markdown import Markdown
 from rich.markup import escape
 from rich.panel import Panel
 from rich.progress import (
@@ -61,23 +59,6 @@ def active_step_label(step_statuses: dict, fallback: str) -> str:
     return fallback
 
 
-def make_score_meter(score: float, width: int = 10) -> str:
-    """Helper to draw a colored progress bar/meter for scores between 0.0 and 1.0."""
-    filled = round(score * width)
-    empty = width - filled
-    bar = "█" * filled + "░" * empty
-    percent = f"{score * 100:.0f}%"
-
-    if score >= 0.80:
-        color = "green"
-    elif score >= 0.60:
-        color = "yellow"
-    else:
-        color = "red"
-
-    return f"[{color}]{bar}[/{color}] {percent}"
-
-
 def format_evidence_items(evidence: list[dict], max_items: int = 3) -> str:
     lines = []
     for item in (evidence or [])[:max_items]:
@@ -119,17 +100,6 @@ def render_recruitment_panel(recruitment: dict) -> None:
         status = "[green]Recruited[/green]" if recruited else "[dim]Skipped[/dim]"
         table.add_row(label, status)
     console.print(table)
-
-    justification = recruitment.get("recruitment_justification", "")
-    if justification:
-        console.print(
-            Panel(
-                escape(justification),
-                title="[bold]Recruitment Rationale[/bold]",
-                border_style="dim",
-                expand=True,
-            )
-        )
     console.print()
 
 
@@ -267,37 +237,13 @@ def render_audit_trail_panel(
         console.print()
 
 
-_DETAILS_SUMMARY_RE = re.compile(r"<details>\s*\n<summary>(.*?)</summary>", re.DOTALL)
-
-
-def _flatten_report_html(markdown_report: str) -> str:
-    """Rich's Markdown renderer drops raw HTML, so turn the report's folded
-    <details>/<summary> blocks into plain headings before rendering in the terminal."""
-    text = _DETAILS_SUMMARY_RE.sub(lambda m: f"\n### {m.group(1)}\n", markdown_report)
-    return text.replace("</details>", "")
-
-
-def render_dashboard_report_panel(markdown_report: str) -> None:
-    """Mirrors the Streamlit Briefing tab's folded 'Full public editor report'."""
-    if not markdown_report:
-        return
-    console.print("[bold]━━━ Consolidated Dashboard Report ━━━[/bold]\n")
-    console.print(
-        Panel(
-            Markdown(_flatten_report_html(markdown_report)),
-            border_style="dim",
-            expand=True,
-        )
-    )
-    console.print()
-
-
 async def run_cli(topic: str):
-    console.print("\n[bold blue]📰 NewsLens Multi-Agent Desk[/bold blue]")
-    console.print(f'[bold dim]Topic:[/bold dim] [yellow]"{topic}"[/yellow]')
+    console.print("\n[bold blue]NewsLens Multi-Agent Desk[/bold blue]")
     console.print(
-        "[bold dim]Mode:[/bold dim] [magenta]Live DuckDuckGo News Search[/magenta]\n"
+        "[dim]Search, verify, compare perspectives, and audit a news topic "
+        "before reading the final briefing.[/dim]"
     )
+    console.print(f'[bold dim]Topic:[/bold dim] [yellow]"{topic}"[/yellow]\n')
 
     coordinator = NewsAnalysisCoordinator()
     control_state: dict = {}
@@ -385,21 +331,17 @@ async def run_cli(topic: str):
                 narratives_data = payload.get("narratives", {})
 
                 consensus_table = Table(
-                    title="[bold green]Consensus Facts (Cross-Verified)[/bold green]",
+                    title="[bold green]Consensus Facts[/bold green]",
                     expand=True,
                 )
                 consensus_table.add_column("Fact/Claim", style="cyan")
                 consensus_table.add_column("Supporting Sources", style="dim green")
                 consensus_table.add_column("Evidence Trail", style="dim")
-                consensus_table.add_column("Cross-Verification Score", justify="right")
 
                 for item in facts_data.get("consensus_facts", []):
                     sources = ", ".join(item.get("supporting_sources", []))
                     evidence = format_evidence_items(item.get("evidence", []))
-                    meter = make_score_meter(item.get("cross_verification_score", 0.0))
-                    consensus_table.add_row(
-                        item.get("claim", ""), sources, evidence, meter
-                    )
+                    consensus_table.add_row(item.get("claim", ""), sources, evidence)
 
                 dispute_table = Table(
                     title="[bold red]Contested Claims & Disputes[/bold red]",
@@ -558,30 +500,15 @@ async def run_cli(topic: str):
             elif step == "public_report_complete":
                 render_public_report_panel(payload)
 
-            elif step == "public_editor_complete":
-                render_dashboard_report_panel(payload if isinstance(payload, str) else "")
-
             elif step == "editor_complete":
                 is_approved = payload.get("is_approved", True)
                 editor_logs = payload.get("editor_logs", [])
                 audit_warnings = payload.get("audit_warnings", [])
                 if not is_approved and editor_logs:
-                    last_log = editor_logs[-1]
-                    feedback = last_log.get("feedback", "")
-                    suggestions = "\n".join(
-                        [f"• {s}" for s in last_log.get("suggestions", [])]
-                    )
                     console.print(
-                        Panel(
-                            f"[bold red]⚠️  WARNING: Editor-in-Chief Audit Loop Rejected This Draft[/bold red]\n\n"
-                            f"[bold]Feedback:[/bold] {feedback}\n"
-                            f"[bold]Revision Directives:[/bold]\n{suggestions}",
-                            title="Editor-in-Chief Disclaimer",
-                            border_style="yellow",
-                            expand=True,
-                        )
+                        "[yellow]This analysis includes a few review notes. "
+                        "See the Audit Trail below.[/yellow]\n"
                     )
-                    console.print()
                 render_audit_trail_panel(editor_logs, audit_warnings)
 
     try:
@@ -594,13 +521,14 @@ async def run_cli(topic: str):
         # Check if the audit input check rejected the query
         if not results.get("input_checked", True):
             input_check = results["input_check_result"]
-            console.print("\n[bold red]✖ Input Check Rejected![/bold red]")
+            action = input_check.get("action", "reject_with_confirmation")
+            console.print("\n[bold red]Input check rejected this request.[/bold red]")
             console.print(
                 Panel(
-                    f"[bold]Action:[/bold] {input_check.get('action', 'reject_with_confirmation')}\n"
-                    f"[bold]Reason:[/bold] {input_check.get('explanation', 'Not news-relevant or safe.')}\n\n"
+                    f"[bold]Action:[/bold] {action.replace('_', ' ').title()}\n"
+                    f"[bold]Decision Reason:[/bold] {input_check.get('explanation', 'Not news-relevant or safe.')}\n\n"
                     f"{input_check.get('notification_message', '')}",
-                    title="Input Moderation Audit Result",
+                    title="Input Check",
                     border_style="red",
                 )
             )
@@ -624,7 +552,7 @@ async def run_cli(topic: str):
             console.print(
                 Panel(
                     "[bold yellow]⚠️ Sparse News Pool[/bold yellow]\n\n"
-                    "Very few unique search sources (3 to 5 unique articles) were found for this query. "
+                    "Very few unique search sources (3 to 5 unique articles) were found for this topic. "
                     "Downstream analysis may be thin or limited.",
                     title="Search Notice",
                     border_style="yellow",
@@ -651,7 +579,7 @@ async def run_cli(topic: str):
             )
             return
 
-        console.print("[bold green]✔ Analysis Complete![/bold green]\n")
+        console.print("[bold green]✅ Pipeline Completed Successfully[/bold green]\n")
 
     except Exception as e:
         console.print(f"\n[bold red]✖ Error during analysis:[/bold red] {e!s}")

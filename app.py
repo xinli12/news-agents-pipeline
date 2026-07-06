@@ -2298,7 +2298,7 @@ with st.expander("Settings", expanded=False):
                 "Gemini 3.1 Flash Lite (Low-Cost)",
                 "Gemini 3.1 Pro Preview (Premium)",
             ],
-            index=0,
+            index=1,
             help="Select the underlying AI model for the agents.",
         )
         MODEL_MAPPING = {
@@ -2452,7 +2452,7 @@ def render_restore_panel(snapshot: dict) -> None:
 with st.form("analysis_form"):
     topic = st.text_area(
         "Topic, headline, URL, or article text",
-        placeholder="Example: Keir Starmer latest resignation rumors",
+        placeholder='Example: "Tech Giant Claims New AI Model Achieves Human-Level Reasoning in Internal Tests"',
         height=90,
     )
     submit = st.form_submit_button(
