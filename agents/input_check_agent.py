@@ -10,7 +10,7 @@ def get_input_check_agent(model_name: str | None = None) -> Agent:
     if model_name is None:
         model_name = os.environ.get("CURRENT_MODEL", "gemini-3.1-flash-lite")
     return Agent(
-        name="review_agent",
+        name="input_check_agent",
         model=model_name,
         instruction=(
             "You are the Input Check Agent. Your job is to pre-audit the user's input before it is "
@@ -44,5 +44,5 @@ def get_input_check_agent(model_name: str | None = None) -> Agent:
         ),
         tools=[scrape_article_text],
         output_schema=InputValidationResult,
-        output_key="review_result",
+        output_key="input_check_result",
     )

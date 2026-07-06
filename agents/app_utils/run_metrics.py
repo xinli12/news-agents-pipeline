@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 STEP_KEYS = [
-    "review",
+    "input_check",
     "search",
     "recruiter",
     "fact_bias",
@@ -23,7 +23,7 @@ STEP_KEYS = [
 ]
 
 STEP_LABELS = {
-    "review": "Input Check",
+    "input_check": "Input Check",
     "search": "Source Search",
     "recruiter": "Orchestrator",
     "fact_bias": "Fact Extraction",

@@ -27,7 +27,7 @@ from agents.outlook_agent import get_outlook_agent
 from agents.public_editor_agent import get_public_editor_agent
 from agents.public_reporter_agent import get_public_reporter_agent
 from agents.recruiter_agent import get_recruiter_agent
-from agents.review_agent import get_input_check_agent
+from agents.input_check_agent import get_input_check_agent
 from agents.schemas import AuditResult, InputValidationResult
 from agents.search_agent import get_search_agent
 
@@ -431,7 +431,7 @@ class NewsAnalysisCoordinator:
     ) -> dict:
         """Run the Input Check Agent synchronously to pre-audit user's input."""
         os.environ["CURRENT_MODEL"] = model_name
-        session_id = f"review_sess_{uuid.uuid4().hex[:8]}"
+        session_id = f"input_check_sess_{uuid.uuid4().hex[:8]}"
         await self.session_service.create_session(
             app_name="news_app", user_id="user", session_id=session_id
         )
@@ -442,7 +442,7 @@ class NewsAnalysisCoordinator:
             result = {
                 "action": "accept",
                 "is_news_related": True,
-                "explanation": "Failed to get review result.",
+                "explanation": "Failed to get input check result.",
                 "notification_message": None,
                 "converted_query": None,
             }
@@ -486,7 +486,7 @@ class NewsAnalysisCoordinator:
         # Initialize step statuses if control state is provided
         if control_state is not None:
             control_state["step_statuses"] = {
-                "review": "queued",
+                "input_check": "queued",
                 "search": "queued",
                 "recruiter": "queued",
                 "fact_bias": "queued",
@@ -522,7 +522,7 @@ class NewsAnalysisCoordinator:
                 }
             )
 
-        review_result = {}
+        input_check_result = {}
         articles_data = None
         recruitment_result = None
         facts_data = None
@@ -539,52 +539,52 @@ class NewsAnalysisCoordinator:
             # Step 0: Input Check Agent
             await self._check_controls(control_state)
             if control_state is not None:
-                control_state["step_statuses"]["review"] = "running"
-            await call_callback("review", "Spawning Input Check Agent...")
+                control_state["step_statuses"]["input_check"] = "running"
+            await call_callback("input_check", "Spawning Input Check Agent...")
 
             if bypass_input_check:
-                review_result = {
+                input_check_result = {
                     "action": "accept",
                     "is_news_related": True,
                     "explanation": "Bypassed input check.",
                     "notification_message": None,
                     "converted_query": None,
                 }
-                review_ok = True
-                await call_callback("review_approved", "Input check bypassed.")
+                input_check_ok = True
+                await call_callback("input_check_approved", "Input check bypassed.")
             else:
                 input_agent = get_input_check_agent(model_name)
 
-                def review_prompt_gen(f, s):
+                def input_check_prompt_gen(f, s):
                     return f"Validate this input topic: '{topic}'" + (
                         f"\n\nFeedback from Auditor: {f}\nSuggestions: {', '.join(s)}"
                         if f
                         else ""
                     )
 
-                review_result, review_ok = await self._run_agent_with_audit(
+                input_check_result, input_check_ok = await self._run_agent_with_audit(
                     input_agent,
-                    review_prompt_gen,
+                    input_check_prompt_gen,
                     INPUT_AUDIT_CRITERIA,
                     session_id,
                     call_callback,
-                    "review",
+                    "input_check",
                     editor_logs,
                     max_revision_cycles=audit_revision_cycles,
                     control_state=control_state,
                     model_name=model_name,
                 )
 
-            if not review_ok:
-                add_unresolved(input_agent.name, "review")
+            if not input_check_ok:
+                add_unresolved(input_agent.name, "input_check")
 
-            action = review_result.get("action", "accept")
+            action = input_check_result.get("action", "accept")
             if action == "reject_with_confirmation":
                 if control_state is not None:
-                    control_state["step_statuses"]["review"] = "failed"
+                    control_state["step_statuses"]["input_check"] = "failed"
                 res = {
-                    "reviewed": False,
-                    "review_result": review_result,
+                    "input_checked": False,
+                    "input_check_result": input_check_result,
                     "editor_logs": editor_logs,
                     "audit_warnings": unresolved_audit_warnings,
                 }
@@ -593,22 +593,22 @@ class NewsAnalysisCoordinator:
                 return res
 
             if control_state is not None:
-                control_state["step_statuses"]["review"] = "completed"
+                control_state["step_statuses"]["input_check"] = "completed"
 
-            if action == "convert" and review_result.get("is_news_related", True):
-                optimized_query = review_result.get("converted_query") or topic
+            if action == "convert" and input_check_result.get("is_news_related", True):
+                optimized_query = input_check_result.get("converted_query") or topic
             else:
                 optimized_query = topic
 
             if results_dict is not None:
-                results_dict["review_result"] = review_result
+                results_dict["input_check_result"] = input_check_result
                 results_dict["optimized_query"] = optimized_query
-                results_dict["reviewed"] = True
+                results_dict["input_checked"] = True
 
             await call_callback(
-                "review_complete",
+                "input_check_complete",
                 f"Input check passed with action '{action}'. Query: '{optimized_query}'",
-                {"review_result": review_result},
+                {"input_check_result": input_check_result},
             )
 
             # Step 1: Search Agent
@@ -650,11 +650,11 @@ class NewsAnalysisCoordinator:
                 if control_state is not None:
                     control_state["step_statuses"]["search"] = "failed"
                 res = {
-                    "reviewed": True,
+                    "input_checked": True,
                     "search_failed": True,
                     "topic": topic,
                     "optimized_query": optimized_query,
-                    "review_result": review_result,
+                    "input_check_result": input_check_result,
                     "search_result": articles_data or {},
                     "editor_logs": editor_logs,
                     "audit_warnings": unresolved_audit_warnings,
@@ -675,11 +675,11 @@ class NewsAnalysisCoordinator:
                 if control_state is not None:
                     control_state["step_statuses"]["search"] = "failed"
                 res = {
-                    "reviewed": True,
+                    "input_checked": True,
                     "search_failed": True,
                     "topic": topic,
                     "optimized_query": optimized_query,
-                    "review_result": review_result,
+                    "input_check_result": input_check_result,
                     "search_result": articles_data,
                     "editor_logs": editor_logs,
                     "audit_warnings": unresolved_audit_warnings,
@@ -1269,10 +1269,10 @@ class NewsAnalysisCoordinator:
             )
 
             final_res = {
-                "reviewed": True,
+                "input_checked": True,
                 "topic": topic,
                 "optimized_query": optimized_query,
-                "review_result": review_result,
+                "input_check_result": input_check_result,
                 "articles": articles_data,
                 "recruitment": recruitment_result,
                 "facts": facts_data,
@@ -1297,12 +1297,12 @@ class NewsAnalysisCoordinator:
                     if status in ["queued", "running"]:
                         control_state["step_statuses"][step] = "stopped"
             partial_res = {
-                "reviewed": "review_result" in locals() and review_result is not None,
+                "input_checked": "input_check_result" in locals() and input_check_result is not None,
                 "topic": topic,
                 "optimized_query": optimized_query
                 if "optimized_query" in locals()
                 else topic,
-                "review_result": review_result if "review_result" in locals() else {},
+                "input_check_result": input_check_result if "input_check_result" in locals() else {},
                 "articles": articles_data if "articles_data" in locals() else {},
                 "recruitment": recruitment_result
                 if "recruitment_result" in locals()
