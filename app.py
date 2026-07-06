@@ -44,7 +44,7 @@ st.markdown(
     }
     .block-container {
         padding-top: 2rem;
-        max-width: 1280px;
+        max-width: 1600px;
     }
     h1, h2, h3 {
         letter-spacing: 0;
@@ -1640,11 +1640,17 @@ def render_analysis_details_column(
     results: dict, step_statuses: dict, status: str
 ) -> None:
     st.markdown("## Analysis details")
-    render_sources_section(results, status)
-    st.divider()
-    render_facts_disputes_perspectives_section(results, step_statuses, status)
-    st.divider()
-    render_expert_outlook_section(results, step_statuses, status)
+    tab_sources, tab_facts, tab_expert = st.tabs([
+        "Sources",
+        "Facts, Disputes & Perspectives",
+        "Expert & Outlook"
+    ])
+    with tab_sources:
+        render_sources_section(results, status)
+    with tab_facts:
+        render_facts_disputes_perspectives_section(results, step_statuses, status)
+    with tab_expert:
+        render_expert_outlook_section(results, step_statuses, status)
 
 
 def render_diagnostics(results: dict, state: dict) -> None:
@@ -1750,108 +1756,6 @@ def render_progress_stepper(step_statuses: dict):
 
     html.append("</div>")
     st.markdown("".join(html), unsafe_allow_html=True)
-
-
-def render_qa_tab(results: dict) -> None:
-    st.markdown("### Ask a follow-up")
-
-    if "chat_messages" not in st.session_state:
-        st.session_state["chat_messages"] = []
-
-    for message in st.session_state["chat_messages"]:
-        with st.chat_message(message["role"]):
-            st.write(message["content"])
-
-    if not (chat_prompt := st.chat_input("Ask about the current report")):
-        return
-
-    st.session_state["chat_messages"].append({"role": "user", "content": chat_prompt})
-    with st.chat_message("user"):
-        st.write(chat_prompt)
-
-    with st.chat_message("assistant"):
-        status = st.empty()
-        status.markdown("Consulting the report context...")
-        try:
-            from google.adk.runners import Runner
-            from google.adk.sessions import InMemorySessionService
-            from google.genai import types as genai_types
-
-            from agents.qa_agent import get_qa_agent
-
-            qa_agent = get_qa_agent()
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-            async def get_response():
-                session_service = InMemorySessionService()
-                session_id = "qa_session"
-                await session_service.create_session(
-                    app_name="news_app", user_id="user", session_id=session_id
-                )
-
-                history_text = "\n".join(
-                    f"{m['role']}: {m['content']}"
-                    for m in st.session_state["chat_messages"][:-1]
-                )
-                articles = (results.get("articles") or {}).get("articles", [])
-                articles_text = "\n".join(
-                    f"Article #{idx}\n"
-                    f"Title: {article.get('title', '')}\n"
-                    f"Source: {article.get('source', '')}\n"
-                    f"URL: {article.get('url', '')}\n"
-                    f"Snippet: {article.get('full_content_snippet', '')}\n---"
-                    for idx, article in enumerate(articles, 1)
-                )
-
-                prompt = (
-                    f"Topic: {results.get('topic', '')}\n"
-                    f"Consensus Facts & Disputes: {results.get('facts', {})}\n"
-                    f"Media Narratives: {results.get('narratives', {})}\n"
-                    f"Expert Commentary: {results.get('experts', {})}\n"
-                    f"Raw Articles:\n{articles_text}\n"
-                    f"History:\n{history_text}\n"
-                    f"User Question: {chat_prompt}"
-                )
-
-                import datetime
-                now = datetime.datetime.now()
-                now_utc = datetime.datetime.now(datetime.UTC)
-                local_date = now.strftime('%B %d, %Y')
-                utc_date = now_utc.strftime('%B %d, %Y')
-                current_date_prefix = (
-                    f"The current date is {local_date} (local system time) / {utc_date} (UTC). "
-                    f"Note: news articles may be dated 1 day ahead or behind due to international timezone differences; "
-                    f"treat such minor discrepancies as valid and current, not as future events or hallucinations.\n\n"
-                )
-                if hasattr(qa_agent, "instruction") and qa_agent.instruction and not qa_agent.instruction.startswith("The current date is"):
-                    qa_agent.instruction = current_date_prefix + qa_agent.instruction
-
-                runner = Runner(
-                    agent=qa_agent,
-                    app_name="news_app",
-                    session_service=session_service,
-                )
-                answer = ""
-                async for event in runner.run_async(
-                    user_id="user",
-                    session_id=session_id,
-                    new_message=genai_types.Content(
-                        role="user", parts=[genai_types.Part.from_text(text=prompt)]
-                    ),
-                ):
-                    if event.is_final_response():
-                        answer = event.content.parts[0].text
-                        break
-                return answer or "No response received."
-
-            answer = loop.run_until_complete(get_response())
-            status.write(answer)
-            st.session_state["chat_messages"].append(
-                {"role": "assistant", "content": answer}
-            )
-        except Exception as exc:
-            status.error(f"Q&A failed: {exc}")
 
 
 # --- Header and Info Desk Title ---
@@ -2117,7 +2021,7 @@ with st.sidebar:
 
 render_run_notices(results)
 
-analysis_col, briefing_col = st.columns([2, 1], gap="large")
+analysis_col, briefing_col = st.columns([3, 1], gap="large")
 with analysis_col:
     render_analysis_details_column(results, step_statuses, status)
 with briefing_col:
@@ -2125,16 +2029,6 @@ with briefing_col:
 
 render_diagnostics(results, state)
 
-st.divider()
-if status == "stopping":
-    st.info("Follow-up Q&A will unlock after the stop request fully completes.")
-elif status not in ["completed", "stopped"]:
-    render_loading_card(
-        "Follow-up Q&A locked",
-        "The interactive Q&A assistant unlocks once the workflow finishes or is stopped.",
-    )
-else:
-    render_qa_tab(results)
 
 
 # --- Polling / Auto-rerun Loop for Active Running status ---
