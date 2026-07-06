@@ -14,10 +14,13 @@ The project is intended for learning and experimentation only, not commercial us
 | Article enrichment | Scrapes selected articles with Jina Reader first, then BeautifulSoup/lxml as a fallback. |
 | Source analysis | Classifies article-level bias/framing, source reliability, media scale, and objectivity. |
 | Modular agents | Recruits dispute, perspective, expert, and future-outlook agents only when the topic appears to need them. |
-| Audit loop | Runs per-stage audit agents with bounded revision cycles and surfaces unresolved warnings. |
-| Public output | Produces a concise public report, a folded editor report, a 7-tab Streamlit dashboard, and optional follow-up Q&A. |
+| Dynamic expert panel | The Expert Agent selects 2-3 relevant professional domains at runtime, then spawns exactly that many domain-expert agents in parallel and synthesizes a roundtable summary. |
+| Audit loop | Runs per-stage audit agents with bounded revision cycles (tiered by risk) and surfaces unresolved warnings. |
+| Public output | Produces a concise public report, a folded dashboard report assembled by a deterministic renderer (no LLM call), a 7-tab Streamlit dashboard, and optional follow-up Q&A. |
 
 ## Architecture
+
+Two stages decide their own shape at runtime instead of following a fixed pipeline: the **Recruiter Agent** skips the Dispute/Perspective/Expert/Outlook agents entirely for low-complexity topics, and the **Expert Agent** first picks 2-3 relevant domains for the story, then spawns exactly that many parallel domain-expert agents (identity and count are not fixed at build time). That adaptive team assembly, not the raw agent count, is the point of the multi-agent design here.
 
 ```mermaid
 graph TD
@@ -30,18 +33,20 @@ graph TD
     C --> F["Fact & Consensus Agent"]
     C --> D["Dispute Agent (optional)"]
     C --> P["Perspective Agent (optional)"]
-    F --> E["Expert Agent (optional)"]
-    D --> E
-    P --> E
+    F --> ES["Expert Domain Selector (optional)"]
+    D --> ES
+    P --> ES
+    ES -->|"spawns 2-3 domain experts at runtime"| EX["Expert Panel (parallel, dynamic count)"]
+    EX --> RT["Roundtable Summarizer"]
     F --> O["Future Outlook Agent (optional)"]
     P --> O
 
     F --> PR["Public Reporter Agent"]
     D --> PR
     P --> PR
-    E --> PR
+    RT --> PR
     O --> PR
-    PR --> PE["Public Editor Agent"]
+    PR --> PE["Report Renderer (deterministic template, no LLM)"]
     PE --> OUT["Streamlit / CLI / ADK / FastAPI output"]
 
     A["Audit Agents"] -. "bounded revision feedback" .-> R
@@ -50,9 +55,9 @@ graph TD
     A -. "bounded revision feedback" .-> F
     A -. "bounded revision feedback" .-> D
     A -. "bounded revision feedback" .-> P
-    A -. "bounded revision feedback" .-> E
+    A -. "bounded revision feedback" .-> EX
     A -. "bounded revision feedback" .-> O
-    A -. "bounded revision feedback" .-> PE
+    A -. "bounded revision feedback" .-> PR
 ```
 
 ## Project Structure
@@ -64,16 +69,16 @@ hackathon/
 │   ├── coordinator.py            # Pipeline orchestration, audits, retries, pause/stop state
 │   ├── fast_api_app.py           # ADK FastAPI server entrypoint used by Docker/tests
 │   ├── search_agent.py           # Search, dedupe, source classification
-│   ├── scraper.py                # Jina Reader + BeautifulSoup article scraping
+│   ├── web_tools.py              # Shared scrape/search tool functions (Jina Reader + BS4, DDGS)
 │   ├── input_check_agent.py      # Input check and query repair
 │   ├── recruiter_agent.py        # Optional module selection
 │   ├── fact_agent.py             # Consensus facts and timeline
 │   ├── dispute_agent.py          # Contested claims
 │   ├── bias_agent.py             # Perspective and narrative profiling
-│   ├── expert_agent.py           # Reference-grounded expert panel
+│   ├── expert_agent.py           # Reference-grounded expert panel (dynamic domain fan-out)
 │   ├── outlook_agent.py          # Future scenarios and monitoring indicators
 │   ├── public_reporter_agent.py  # Public-facing summary
-│   ├── public_editor_agent.py    # Consolidated folded Markdown report
+│   ├── report_renderer.py        # Deterministic folded Markdown report (no LLM call)
 │   ├── qa_agent.py               # Follow-up Q&A for completed reports
 │   ├── evidence_verifier.py      # Deterministic evidence/citation checks
 │   ├── schemas.py                # Pydantic output contracts
@@ -168,6 +173,16 @@ agents-cli eval grade --config tests/eval/eval_config.yaml
 - `CURRENT_MODEL`: set internally by the coordinator from the selected model; defaults to `gemini-3.1-flash-lite`.
 - `LOGS_BUCKET_NAME`: optional GCS bucket for ADK artifact/telemetry paths in deployed environments.
 - `ALLOW_ORIGINS`: optional comma-separated CORS allowlist for the FastAPI app.
+
+## Capstone Rubric Coverage
+
+| Category | Status | Where |
+| --- | --- | --- |
+| Multi-agent systems | Done | `agents/coordinator.py` orchestrates 10+ specialist agents with runtime-decided fan-out: the Recruiter Agent adaptively skips agents for simple topics, and the Expert Agent spawns a variable-size parallel domain-expert panel (see Architecture above). |
+| Deployability | Done | `Dockerfile` + `agents/fast_api_app.py` (ADK FastAPI server); no API keys committed, read from environment/`.env`. |
+| Security features | Partial | See Security Notes below; scraped/searched external content is treated as untrusted input, but no formal SSRF/prompt-injection hardening yet. |
+| Antigravity | Not used | N/A for this submission. |
+| Agent skills | N/A | Not applicable to this ADK-based submission. |
 
 ## Security Notes
 

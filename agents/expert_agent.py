@@ -4,6 +4,7 @@ import re
 from google.adk.agents import Agent
 
 from agents.schemas import ExpertDomainSelection, ExpertOpinion, RoundtableSummary
+from agents.web_tools import search_authoritative_data
 
 
 def _resolve_model(model_name: str | None) -> str:
@@ -34,29 +35,6 @@ def get_expert_domain_selector(model_name: str | None = None) -> Agent:
         output_schema=ExpertDomainSelection,
         output_key="expert_domains_data",
     )
-
-
-def search_authoritative_data(query: str) -> str:
-    """Searches the web for authoritative academic papers, official regulatory standards, economic data, or industry guidelines.
-
-    Args:
-        query: The search query, e.g., 'CPI inflation rate US 2024' or 'FDA pharmaceutical trial regulations'.
-    """
-    try:
-        from ddgs import DDGS
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=5))
-            if not results:
-                return f"No authoritative sources found for query: {query}"
-            output = []
-            for r in results:
-                title = r.get("title", "N/A")
-                url = r.get("href", "") or r.get("url", "")
-                body = r.get("body", "N/A")
-                output.append(f"Title: {title}\nURL: {url}\nSnippet: {body}\n---")
-            return "\n".join(output)
-    except Exception as e:
-        return f"Error executing DuckDuckGo search: {e!s}"
 
 
 def get_domain_expert_agent(domain: str, model_name: str | None = None) -> Agent:

@@ -24,12 +24,13 @@ from agents.expert_agent import (
 )
 from agents.fact_agent import get_fact_agent
 from agents.outlook_agent import get_outlook_agent
-from agents.public_editor_agent import get_public_editor_agent
 from agents.public_reporter_agent import get_public_reporter_agent
+from agents.report_renderer import render_public_editor_report
 from agents.recruiter_agent import get_recruiter_agent
 from agents.input_check_agent import get_input_check_agent
 from agents.schemas import AuditResult, InputValidationResult
 from agents.search_agent import get_search_agent
+from agents.web_tools import is_transient_error
 
 
 class WorkflowStoppedException(Exception):
@@ -114,14 +115,6 @@ PUBLIC_REPORTER_AUDIT_CRITERIA = (
     "3. Preserve material caveats, unresolved audit warnings, and uncertainty in public-friendly language.\n"
     "4. Every key takeaway must carry an evidence trail (source, URL, quote) copied from upstream outputs."
 )
-
-PUBLIC_EDITOR_AUDIT_CRITERIA = (
-    "1. Ensure the highly condensed executive summary is at the absolute top of the page.\n"
-    "2. Ensure all detailed sections (disputes, narratives, expert opinions, timeline, scenarios) are folded inside HTML '<details>' and '<summary>' tags.\n"
-    "3. Verify there are no raw system JSONs, developer-facing debug strings, or internal agent annotations.\n"
-    "4. Ensure key claims link to their source articles (markdown links) and the report ends with a Sources section listing the cited URLs."
-)
-
 
 def get_audit_agent(
     agent_name: str, criteria: str, model_name: str | None = None
@@ -220,6 +213,8 @@ class NewsAnalysisCoordinator:
         if hasattr(agent, "instruction") and agent.instruction and not agent.instruction.startswith("The current date is"):
             agent.instruction = current_date_prefix + agent.instruction
 
+        current_prompt = prompt_text
+
         for attempt in range(1, max_retries + 1):
             try:
                 agent_session_id = f"{session_id}_{agent.name}_{attempt}"
@@ -244,7 +239,7 @@ class NewsAnalysisCoordinator:
                     user_id="user",
                     session_id=agent_session_id,
                     new_message=types.Content(
-                        role="user", parts=[types.Part.from_text(text=prompt_text)]
+                        role="user", parts=[types.Part.from_text(text=current_prompt)]
                     ),
                 ):
                     pass
@@ -271,16 +266,33 @@ class NewsAnalysisCoordinator:
                         e,
                     )
                     raise
-                backoff = 2**attempt
-                logger.warning(
-                    "Agent '%s' failed (attempt %d/%d): %s. Retrying in %ds...",
-                    agent.name,
-                    attempt,
-                    max_retries,
-                    e,
-                    backoff,
-                )
-                await asyncio.sleep(backoff)
+                if is_transient_error(e):
+                    backoff = 2**attempt
+                    logger.warning(
+                        "Agent '%s' hit a transient error (attempt %d/%d): %s. "
+                        "Retrying in %ds...",
+                        agent.name,
+                        attempt,
+                        max_retries,
+                        e,
+                        backoff,
+                    )
+                    await asyncio.sleep(backoff)
+                else:
+                    logger.warning(
+                        "Agent '%s' produced an unusable response (attempt %d/%d): %s. "
+                        "Retrying immediately with the error appended to the prompt...",
+                        agent.name,
+                        attempt,
+                        max_retries,
+                        e,
+                    )
+                    current_prompt = (
+                        f"{prompt_text}\n\n"
+                        f"NOTE: Your previous response could not be processed due to: "
+                        f"{e!s}\nEnsure your output is well-formed and matches the "
+                        "required schema exactly."
+                    )
 
     async def _run_agent_with_audit(
         self,
@@ -506,7 +518,14 @@ class NewsAnalysisCoordinator:
         )
         editor_logs = []
         unresolved_audit_warnings = []
+        # High-risk, user-facing stages (search, fact/dispute/perspective, expert,
+        # outlook, public report) get the full revision budget since their output
+        # feeds directly into the final briefing. Low-risk routing/gating stages
+        # (input check, recruiter) only decide what runs next, not final content,
+        # so one revision is enough to catch a bad decision without doubling their
+        # LLM-call cost on every run.
         audit_revision_cycles = 2 if enable_editor else 0
+        light_revision_cycles = 1 if enable_editor else 0
 
         def add_unresolved(agent_name: str, step_name: str):
             related_logs = [
@@ -571,7 +590,7 @@ class NewsAnalysisCoordinator:
                     call_callback,
                     "input_check",
                     editor_logs,
-                    max_revision_cycles=audit_revision_cycles,
+                    max_revision_cycles=light_revision_cycles,
                     control_state=control_state,
                     model_name=model_name,
                 )
@@ -729,7 +748,7 @@ class NewsAnalysisCoordinator:
                 call_callback,
                 "recruiter",
                 editor_logs,
-                max_revision_cycles=audit_revision_cycles,
+                max_revision_cycles=light_revision_cycles,
                 control_state=control_state,
                 model_name=model_name,
             )
@@ -1198,51 +1217,30 @@ class NewsAnalysisCoordinator:
                 "public_report_complete", "Public report completed.", public_report
             )
 
-            # Step 9: Public Editor Agent (Consolidated Markdown Dashboard)
+            # Step 9: Consolidated Markdown Dashboard (deterministic renderer, no LLM)
+            #
+            # Folding upstream output into <details> blocks and building a Sources
+            # section is pure templating over already-audited data, so this runs as
+            # a direct function call instead of another agent + audit cycle.
             await self._check_controls(control_state)
             if control_state is not None:
                 control_state["step_statuses"]["public_editor"] = "running"
             await call_callback(
-                "public_editor",
-                "Spawning Public Editor Agent to build consolidated dashboard...",
-            )
-            public_editor_agent = get_public_editor_agent(model_name)
-
-            def public_editor_prompt_gen(f, s):
-                return (
-                    f"Topic: {topic}\n"
-                    f"Public Summary Report (with citations): {public_report}\n"
-                    f"Consensus & Facts: {facts_data}\n"
-                    f"Media Narratives: {bias_data}\n"
-                    f"Expert Commentary: {expert_data}\n"
-                    f"Future Scenarios: {outlook_data}\n"
-                    f"Unresolved Audit Warnings: {unresolved_audit_warnings}"
-                    + (
-                        f"\n\nFeedback from Auditor: {f}\nSuggestions: {', '.join(s)}"
-                        if f
-                        else ""
-                    )
-                )
-
-            public_editor_data, editor_ok = await self._run_agent_with_audit(
-                public_editor_agent,
-                public_editor_prompt_gen,
-                PUBLIC_EDITOR_AUDIT_CRITERIA,
-                session_id,
-                call_callback,
-                "public_editor",
-                editor_logs,
-                max_revision_cycles=audit_revision_cycles,
-                control_state=control_state,
-                model_name=model_name,
+                "public_editor", "Rendering consolidated dashboard report..."
             )
 
-            if not public_editor_data:
-                public_editor_data = {"markdown_report": "", "unresolved_warnings": []}
+            public_editor_data = render_public_editor_report(
+                topic,
+                public_report,
+                facts_data,
+                bias_data,
+                expert_data,
+                outlook_data,
+                articles_data,
+                unresolved_audit_warnings,
+            )
             public_editor_report = public_editor_data.get("markdown_report", "")
             public_editor_warnings = public_editor_data.get("unresolved_warnings", [])
-            if not editor_ok:
-                add_unresolved(public_editor_agent.name, "public_editor")
 
             if control_state is not None:
                 control_state["step_statuses"]["public_editor"] = "completed"

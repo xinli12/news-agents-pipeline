@@ -1,13 +1,37 @@
+"""Shared network-access tool functions used by multiple agents.
+
+Scraping and web search were each reimplemented ad hoc wherever an agent
+needed them. This module is the single home for those primitives so agents
+share one implementation instead of drifting apart.
+"""
+
 import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 from bs4 import BeautifulSoup
+from ddgs import DDGS
+from google.genai import errors as genai_errors
 
 from agents.evidence_verifier import register_article_full_text
 
 _SCRAPE_ERROR_PREFIXES = ("HTTP Error", "URL Error", "Scraping error", "Invalid URL")
+
+
+def is_transient_error(error: Exception) -> bool:
+    """True for API/network hiccups worth a blind backoff-and-retry.
+
+    Everything else (schema/validation failures, parsing errors, etc.) is
+    likely to reproduce under the exact same prompt, so those are better
+    retried immediately with the failure fed back into the prompt/fallback
+    logic instead of waiting on a fixed backoff that won't change the outcome.
+    """
+    if isinstance(error, genai_errors.ServerError):
+        return True
+    if isinstance(error, genai_errors.ClientError):
+        return getattr(error, "code", None) == 429
+    return isinstance(error, (TimeoutError, ConnectionError, OSError))
 
 
 def scrape_article_text(url: str, timeout: int = 10) -> str:
@@ -119,3 +143,25 @@ def scrape_articles_parallel(urls: list[str], max_workers: int = 15) -> dict[str
                 results[url] = f"Error in threading execution: {e!s}"
 
     return results
+
+
+def search_authoritative_data(query: str) -> str:
+    """Searches the web for authoritative academic papers, official regulatory standards, economic data, or industry guidelines.
+
+    Args:
+        query: The search query, e.g., 'CPI inflation rate US 2024' or 'FDA pharmaceutical trial regulations'.
+    """
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=5))
+            if not results:
+                return f"No authoritative sources found for query: {query}"
+            output = []
+            for r in results:
+                title = r.get("title", "N/A")
+                url = r.get("href", "") or r.get("url", "")
+                body = r.get("body", "N/A")
+                output.append(f"Title: {title}\nURL: {url}\nSnippet: {body}\n---")
+            return "\n".join(output)
+    except Exception as e:
+        return f"Error executing DuckDuckGo search: {e!s}"
