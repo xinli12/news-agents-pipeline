@@ -27,7 +27,7 @@ def get_input_check_agent(model_name: str | None = None) -> Agent:
             "(e.g., 'taxes', 'climate change', 'Keir Starmer'). Set action to 'accept_with_notification', is_news_related to true, "
             "provide a helpful notification_message advising the user that a more specific query will yield better results, and set converted_query to null "
             "(e.g. 'Your query is very broad; specifying a recent event or region will help narrow down the search').\n"
-            "3. Reject_with_confirmation: Use when the input is not news-related (e.g., homework, programming questions, math, "
+            "3. Reject_with_confirmation: Use only when the input is clearly and confidently determined to be not news-related (e.g., homework, programming questions, math, "
             "definitions like 'What is a Fourier transform?', or general chat). Set action to 'reject_with_confirmation', "
             "is_news_related to false, set converted_query to null, and populate notification_message asking the user if they want to revise their query to add news context.\n"
             "4. Convert: Use ONLY when the input contains a URL or a full article copy-paste.\n"
@@ -43,6 +43,9 @@ def get_input_check_agent(model_name: str | None = None) -> Agent:
             "     Avoid queries like: 'BBC news article c4gy700j0eko'. Explain the decision in 'explanation'.\n"
             "   - If it is NOT news-related: set action to 'reject_with_confirmation', is_news_related to false, set converted_query to null, "
             "and use notification_message to explain the rejection and ask if they would like to revise it.\n\n"
+            "Spelling Errors:\n"
+            "If the input contains an obvious spelling error, notify the user about it in 'notification_message'. "
+            "You should ONLY notify the user; do NOT reject the input or change the selected action solely because of the spelling error.\n\n"
             "Always output valid JSON complying with the InputValidationResult schema."
         ),
         tools=[scrape_article_text],

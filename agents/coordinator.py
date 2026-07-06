@@ -23,12 +23,12 @@ from agents.expert_agent import (
     get_roundtable_summarizer,
 )
 from agents.fact_agent import get_fact_agent
+from agents.input_check_agent import get_input_check_agent
 from agents.outlook_agent import get_outlook_agent
 from agents.public_reporter_agent import get_public_reporter_agent
-from agents.report_renderer import render_public_editor_report
 from agents.recruiter_agent import get_recruiter_agent
-from agents.input_check_agent import get_input_check_agent
-from agents.schemas import AuditResult, InputValidationResult
+from agents.report_renderer import render_public_editor_report
+from agents.schemas import AuditResult
 from agents.search_agent import get_search_agent
 from agents.web_tools import is_transient_error
 
@@ -201,7 +201,7 @@ class NewsAnalysisCoordinator:
 
         import datetime
         now = datetime.datetime.now()
-        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        now_utc = datetime.datetime.now(datetime.UTC)
         local_date = now.strftime('%B %d, %Y')
         utc_date = now_utc.strftime('%B %d, %Y')
         current_date_prefix = (
@@ -574,26 +574,20 @@ class NewsAnalysisCoordinator:
                 await call_callback("input_check_approved", "Input check bypassed.")
             else:
                 input_agent = get_input_check_agent(model_name)
-
-                def input_check_prompt_gen(f, s):
-                    return f"Validate this input topic: '{topic}'" + (
-                        f"\n\nFeedback from Auditor: {f}\nSuggestions: {', '.join(s)}"
-                        if f
-                        else ""
-                    )
-
-                input_check_result, input_check_ok = await self._run_agent_with_audit(
-                    input_agent,
-                    input_check_prompt_gen,
-                    INPUT_AUDIT_CRITERIA,
-                    session_id,
-                    call_callback,
-                    "input_check",
-                    editor_logs,
-                    max_revision_cycles=light_revision_cycles,
-                    control_state=control_state,
-                    model_name=model_name,
+                prompt_text = f"Validate this input topic: '{topic}'"
+                input_check_result = await self._run_agent(
+                    input_agent, prompt_text, session_id
                 )
+                if not input_check_result:
+                    input_check_result = {
+                        "action": "accept",
+                        "is_news_related": True,
+                        "explanation": "Failed to get input check result.",
+                        "notification_message": None,
+                        "converted_query": None,
+                    }
+                input_check_ok = True
+                await call_callback("input_check_approved", "Input check completed.")
 
             if not input_check_ok:
                 add_unresolved(input_agent.name, "input_check")
