@@ -1555,23 +1555,7 @@ def render_expert_outlook_section(
         render_outlook_scenarios(outlook)
 
 
-def render_key_facts_summary(facts: dict, status: str) -> None:
-    consensus = facts.get("consensus_facts") or []
-    if not consensus:
-        if is_active_run(status):
-            st.caption("Key facts will appear after fact extraction completes.")
-        else:
-            st.info("No key facts summary is available.")
-        return
 
-    for item in consensus[:5]:
-        claim = item.get("claim") if isinstance(item, dict) else str(item)
-        if claim:
-            st.markdown(f"- {claim}")
-            if isinstance(item, dict) and item.get("supporting_sources"):
-                st.caption(f"Sources: {join_or_dash(item.get('supporting_sources'))}")
-    if len(consensus) > 5:
-        st.caption(f"{len(consensus) - 5} additional consensus facts in Analysis details.")
 
 
 def render_briefing_column(results: dict, status: str) -> None:
@@ -1619,8 +1603,6 @@ def render_briefing_column(results: dict, status: str) -> None:
     else:
         st.info("No key takeaways were generated.")
 
-    st.markdown("#### Key facts summary")
-    render_key_facts_summary(results.get("facts") or {}, status)
 
     if public_report.get("narrative_summary"):
         with st.expander("Narrative synthesis", expanded=False):
@@ -1630,10 +1612,6 @@ def render_briefing_column(results: dict, status: str) -> None:
         with st.expander("What to watch next", expanded=False):
             st.write(public_report["future_outlook"])
 
-    editor_report = results.get("public_editor_report")
-    if editor_report:
-        with st.expander("Full public editor report", expanded=False):
-            st.markdown(editor_report, unsafe_allow_html=True)
 
 
 def render_analysis_details_column(
@@ -2021,7 +1999,7 @@ with st.sidebar:
 
 render_run_notices(results)
 
-analysis_col, briefing_col = st.columns([3, 1], gap="large")
+analysis_col, briefing_col = st.columns([2.7, 1], gap="medium")
 with analysis_col:
     render_analysis_details_column(results, step_statuses, status)
 with briefing_col:
