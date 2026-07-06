@@ -435,9 +435,7 @@ def record_result_token_estimate(
     if (metrics.get("token_usage") or {}).get("by_agent"):
         return
     result_snapshot = {
-        key: value
-        for key, value in results.items()
-        if key not in {"run_metrics"}
+        key: value for key, value in results.items() if key not in {"run_metrics"}
     }
     record_agent_token_usage(
         metrics,
