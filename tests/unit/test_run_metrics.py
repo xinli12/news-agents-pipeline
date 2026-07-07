@@ -6,6 +6,7 @@ from agents.app_utils.run_metrics import (
     estimate_cost,
     estimate_tokens_from_text,
     extract_event_token_usage,
+    extract_usage_metadata_counts,
     finalize_run_metrics,
     format_duration,
     merge_usage_counts,
@@ -83,6 +84,46 @@ def test_actual_usage_metadata_is_extracted_from_mapping_shape() -> None:
         "output": 9,
         "total": 20,
     }
+
+
+def test_usage_metadata_accepts_known_adk_token_field_aliases() -> None:
+    usage_shapes = [
+        (
+            {
+                "input_tokens": 3,
+                "output_tokens": 4,
+                "total_tokens": 7,
+            },
+            {"input": 3, "output": 4, "total": 7},
+        ),
+        (
+            {
+                "input_token_count": 5,
+                "output_token_count": 6,
+                "total_token_count": 11,
+            },
+            {"input": 5, "output": 6, "total": 11},
+        ),
+        (
+            {
+                "prompt_tokens": 8,
+                "completion_tokens": 9,
+                "total_tokens": 17,
+            },
+            {"input": 8, "output": 9, "total": 17},
+        ),
+        (
+            SimpleNamespace(
+                inputTokenCount=10,
+                outputTokenCount=12,
+                totalTokenCount=22,
+            ),
+            {"input": 10, "output": 12, "total": 22},
+        ),
+    ]
+
+    for usage_metadata, expected in usage_shapes:
+        assert extract_usage_metadata_counts(usage_metadata) == expected
 
 
 def test_agent_usage_records_actual_tokens_when_metadata_exists() -> None:
@@ -203,6 +244,29 @@ def test_result_token_estimate_does_not_store_result_payload() -> None:
     assert usage["usage_type"] == "estimated"
     assert usage["output_tokens"] > 0
     assert "public_report" not in str(usage["by_agent"]["workflow_result"])
+    assert "A short generated summary." not in str(usage)
+
+
+def test_metrics_do_not_store_sensitive_prompt_output_or_article_payloads() -> None:
+    metrics = create_run_metrics("test-model", start_timestamp=100.0)
+
+    record_agent_token_usage(
+        metrics,
+        "privacy_agent",
+        prompt_text="PROMPT_SHOULD_NOT_BE_STORED",
+        output_value={
+            "response": "FULL_RESPONSE_SHOULD_NOT_BE_STORED",
+            "article": {"body": "ARTICLE_BODY_SHOULD_NOT_BE_STORED"},
+            "raw_event": "RAW_EVENT_SHOULD_NOT_BE_STORED",
+        },
+    )
+
+    metrics_text = str(metrics)
+    assert metrics["token_usage"]["usage_type"] == "estimated"
+    assert "PROMPT_SHOULD_NOT_BE_STORED" not in metrics_text
+    assert "FULL_RESPONSE_SHOULD_NOT_BE_STORED" not in metrics_text
+    assert "ARTICLE_BODY_SHOULD_NOT_BE_STORED" not in metrics_text
+    assert "RAW_EVENT_SHOULD_NOT_BE_STORED" not in metrics_text
 
 
 def test_result_token_estimate_is_skipped_when_agent_usage_exists() -> None:
