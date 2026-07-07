@@ -26,6 +26,48 @@ _WIRE_MARKER_PATTERNS = {
     marker: re.compile(rf"\b{re.escape(marker)}\b") for marker in WIRE_SOURCE_NAMES
 }
 
+SEARCH_PROFILES = {
+    "balanced": {
+        "raw_fetch_target": 55,
+        "text_fetch_target": 55,
+        "thin_page_threshold": 20,
+        "max_to_scrape": {
+            "Simple": 8,
+            "Moderate": 15,
+            "High": 24,
+        },
+        "instruction_ranges": {
+            "Simple": "4 to 7",
+            "Moderate": "8 to 12",
+            "High": "12 to 18",
+        },
+    },
+    "fast": {
+        "raw_fetch_target": 30,
+        "text_fetch_target": 24,
+        "thin_page_threshold": 10,
+        "max_to_scrape": {
+            "Simple": 5,
+            "Moderate": 8,
+            "High": 10,
+        },
+        "instruction_ranges": {
+            "Simple": "3 to 5",
+            "Moderate": "6 to 8",
+            "High": "8 to 10",
+        },
+    },
+}
+
+
+def normalize_search_profile(profile: str | None) -> str:
+    normalized = str(profile or "balanced").strip().lower().replace("-", "_")
+    return normalized if normalized in SEARCH_PROFILES else "balanced"
+
+
+def get_search_profile_config(profile: str | None) -> dict:
+    return SEARCH_PROFILES[normalize_search_profile(profile)]
+
 
 def get_domain(url: str) -> str:
     try:
@@ -206,16 +248,23 @@ def classify_search_results(
     }
 
 
-def get_live_news_articles(topic: str) -> str:
+def _get_live_news_articles_for_profile(
+    topic: str, search_profile: str | None = None
+) -> str:
     """Searches the web for live news articles on a given topic and scrapes full texts in parallel.
 
     Args:
         topic: The news topic or search query, e.g. 'Federal Reserve interest rate hike'.
+        search_profile: Optional runtime profile. Fast uses a smaller candidate
+            and scrape budget while preserving dedupe and source balancing.
     """
     import sys
 
-    RAW_FETCH_TARGET = 55
-    THIN_PAGE_THRESHOLD = 20
+    profile_name = normalize_search_profile(search_profile)
+    profile = get_search_profile_config(profile_name)
+    raw_fetch_target = int(profile["raw_fetch_target"])
+    text_fetch_target = int(profile["text_fetch_target"])
+    thin_page_threshold = int(profile["thin_page_threshold"])
 
     try:
         with DDGS() as ddgs:
@@ -225,7 +274,7 @@ def get_live_news_articles(topic: str) -> str:
             # came back thin, since dedupe_candidate_pool collapses wire/reprint
             # clusters below and a small raw pool often can't survive that intact.
             try:
-                news_results = list(ddgs.news(topic, max_results=RAW_FETCH_TARGET))
+                news_results = list(ddgs.news(topic, max_results=raw_fetch_target))
             except Exception as news_err:
                 print(
                     f"Warning: ddgs.news search failed ({news_err!s}).",
@@ -234,10 +283,10 @@ def get_live_news_articles(topic: str) -> str:
                 news_results = []
             results.extend(news_results)
 
-            if len(news_results) < THIN_PAGE_THRESHOLD:
+            if len(news_results) < thin_page_threshold:
                 try:
                     results.extend(
-                        ddgs.news(topic, max_results=RAW_FETCH_TARGET, page=2)
+                        ddgs.news(topic, max_results=raw_fetch_target, page=2)
                     )
                 except Exception as news_err2:
                     print(
@@ -249,7 +298,7 @@ def get_live_news_articles(topic: str) -> str:
             # back to it when ddgs.news raises -- a news call that succeeds but
             # returns few results previously never got supplemented.
             try:
-                text_results = list(ddgs.text(topic, max_results=RAW_FETCH_TARGET))
+                text_results = list(ddgs.text(topic, max_results=text_fetch_target))
             except Exception as text_err:
                 print(
                     f"Warning: ddgs.text search failed ({text_err!s}).",
@@ -300,12 +349,11 @@ def get_live_news_articles(topic: str) -> str:
             articles_bias_map = classification["article_bias"]
 
             # Determine maximum articles to scrape based on complexity
-            if complexity == "Simple":
-                max_to_scrape = 8
-            elif complexity == "Moderate":
-                max_to_scrape = 15
-            else:
-                max_to_scrape = 24
+            max_to_scrape = int(
+                profile["max_to_scrape"].get(
+                    complexity, profile["max_to_scrape"]["Moderate"]
+                )
+            )
 
             # Categorize the search results by their article-level bias dynamically
             lefts = []
@@ -403,6 +451,8 @@ def get_live_news_articles(topic: str) -> str:
                 + ("; ".join(wire_groups[:8]) if wire_groups else "None detected"),
                 "---",
             ]
+            if profile_name != "balanced":
+                output.insert(2, f"SEARCH_PROFILE: {profile_name}")
             for idx, r in enumerate(selected_results, start=1):
                 url = r.get("url", "N/A")
                 # If we successfully scraped the full content, use it. Otherwise, fallback to the search snippet.
@@ -432,13 +482,33 @@ def get_live_news_articles(topic: str) -> str:
         return f"Error executing DuckDuckGo search: {e!s}"
 
 
-def get_search_agent(model_name: str | None = None) -> Agent:
+def get_live_news_articles(topic: str) -> str:
+    """Default news search used by Balanced and Deep modes."""
+    return _get_live_news_articles_for_profile(topic, search_profile="balanced")
+
+
+def get_fast_live_news_articles(topic: str) -> str:
+    """Fast-mode news search with a smaller selected article scrape budget."""
+    return _get_live_news_articles_for_profile(topic, search_profile="fast")
+
+
+def get_search_agent(
+    model_name: str | None = None,
+    search_profile: str | None = None,
+) -> Agent:
     if model_name is None:
         import os
 
         model_name = os.environ.get("CURRENT_MODEL", "gemini-3.1-flash-lite")
-    tools = [get_live_news_articles]
-    tool_name = "get_live_news_articles"
+    profile_name = normalize_search_profile(search_profile)
+    profile = get_search_profile_config(profile_name)
+    if profile_name == "fast":
+        tools = [get_fast_live_news_articles]
+        tool_name = "get_fast_live_news_articles"
+    else:
+        tools = [get_live_news_articles]
+        tool_name = "get_live_news_articles"
+    ranges = profile["instruction_ranges"]
 
     return Agent(
         name="search_agent",
@@ -459,9 +529,9 @@ def get_search_agent(model_name: str | None = None) -> Agent:
             f"CRITICAL: Do not flag search results as fictional, hypothetical, or speculative solely because they describe events that occurred after your training data cutoff. If multiple credible, independent sources report an event as real news, treat it as authentic rather than as a hypothetical scenario.\n"
             f"CRITICAL: The number of articles you select and include in the 'articles' list MUST depend on the diversity and complexity of the search results "
             f"(or as many as possible if search results are limited), based on the 'TOPIC_COMPLEXITY' returned by the tool:\n"
-            f"- 'Simple' (primarily describes a single event with little disagreement or analysis): Select 4 to 7 articles.\n"
-            f"- 'Moderate' (covers multiple aspects of the topic, such as different stakeholders, analyses, or developments): Select 8 to 12 articles.\n"
-            f"- 'High' (reveals a complex, evolving, or controversial topic with multiple independent viewpoints): Select 12 to 18 articles.\n"
+            f"- 'Simple' (primarily describes a single event with little disagreement or analysis): Select {ranges['Simple']} articles.\n"
+            f"- 'Moderate' (covers multiple aspects of the topic, such as different stakeholders, analyses, or developments): Select {ranges['Moderate']} articles.\n"
+            f"- 'High' (reveals a complex, evolving, or controversial topic with multiple independent viewpoints): Select {ranges['High']} articles.\n"
             f"If the tool returns fewer unique articles than the target range, select as many available articles as possible.\n"
             f"CRITICAL: You must follow the selection logic and method based on 'TOPIC_TYPE' returned by the tool:\n"
             f"- If the TOPIC_TYPE is 'viewpoint-oriented' (covering political, public policy, legal, economic, or other topics with multiple viewpoints): "

@@ -20,6 +20,7 @@ from agents.app_utils.analysis_mode import (
     build_articles_context_for_mode,
     get_analysis_mode_config,
     normalize_analysis_mode,
+    search_profile_for_mode,
 )
 from agents.app_utils.run_metrics import (
     extract_event_token_usage,
@@ -208,6 +209,55 @@ def merge_disputed_claims(
         merged.append(item)
 
     return merged
+
+
+def apply_fast_optional_module_policy(
+    recruitment_result: dict | None,
+    analysis_mode: str,
+) -> list[str]:
+    """Conservatively skip expensive optional modules for low-complexity Fast runs."""
+    if analysis_mode != "fast" or not isinstance(recruitment_result, dict):
+        return []
+
+    complexity = str(recruitment_result.get("complexity_level") or "").strip().lower()
+    if complexity not in {"low", "simple"}:
+        return []
+
+    skipped_by_fast = []
+    optional_modules = (
+        ("recruit_expert", "Expert Agent"),
+        ("recruit_future_outlook", "Future Outlook Agent"),
+    )
+    for flag, label in optional_modules:
+        if recruitment_result.get(flag, True):
+            recruitment_result[flag] = False
+            skipped_by_fast.append(label)
+
+    if not skipped_by_fast:
+        return []
+
+    recruited = [
+        agent
+        for agent in recruitment_result.get("recruited_agents", [])
+        if agent not in skipped_by_fast
+    ]
+    skipped = list(
+        dict.fromkeys(list(recruitment_result.get("skipped_agents", [])) + skipped_by_fast)
+    )
+    recruitment_result["recruited_agents"] = recruited
+    recruitment_result["skipped_agents"] = skipped
+    fast_note = (
+        "Fast mode skipped "
+        + ", ".join(skipped_by_fast)
+        + " for a low-complexity topic."
+    )
+    existing_justification = str(
+        recruitment_result.get("recruitment_justification") or ""
+    ).strip()
+    recruitment_result["recruitment_justification"] = (
+        f"{existing_justification} {fast_note}".strip()
+    )
+    return skipped_by_fast
 
 
 class NewsAnalysisCoordinator:
@@ -722,6 +772,48 @@ class NewsAnalysisCoordinator:
             if enable_editor
             else 0
         )
+        fast_mode_adjustments = {
+            "enabled": analysis_mode == "fast",
+            "analysis_mode": analysis_mode,
+            "source_search_profile": search_profile_for_mode(analysis_mode),
+            "source_search_target": mode_config["search_prompt_article_target"],
+            "compact_context_used": bool(mode_config["compact_downstream_context"]),
+            "full_article_count": 0,
+            "compact_article_count": 0,
+            "approximate_context_reduction": 0.0,
+            "audit_revision_cycles_used": {
+                "default": audit_revision_cycles,
+                "recruiter": light_revision_cycles,
+            },
+            "optional_modules_skipped_by_fast_mode": [],
+        }
+
+        def sync_mode_metadata() -> None:
+            mode_metadata = {
+                "fast_mode_adjustments": dict(fast_mode_adjustments),
+                "compact_context_used": fast_mode_adjustments["compact_context_used"],
+                "full_article_count": fast_mode_adjustments["full_article_count"],
+                "compact_article_count": fast_mode_adjustments[
+                    "compact_article_count"
+                ],
+                "approximate_context_reduction": fast_mode_adjustments[
+                    "approximate_context_reduction"
+                ],
+                "audit_revision_cycles_used": fast_mode_adjustments[
+                    "audit_revision_cycles_used"
+                ],
+                "optional_modules_skipped_by_fast_mode": list(
+                    fast_mode_adjustments["optional_modules_skipped_by_fast_mode"]
+                ),
+            }
+            if isinstance(run_metrics, dict):
+                run_metrics.update(mode_metadata)
+            if control_state is not None:
+                control_state.update(mode_metadata)
+            if results_dict is not None:
+                results_dict.update(mode_metadata)
+
+        sync_mode_metadata()
 
         def add_unresolved(agent_name: str, step_name: str):
             related_logs = [
@@ -836,11 +928,16 @@ class NewsAnalysisCoordinator:
             await call_callback(
                 "search", f"Searching news articles for: '{optimized_query}'..."
             )
-            search_agent = get_search_agent(model_name)
+            search_agent = get_search_agent(
+                model_name,
+                search_profile=fast_mode_adjustments["source_search_profile"],
+            )
 
             def search_prompt_gen(f, s):
                 return (
-                    f"Search and categorize 15-18 articles for topic: '{optimized_query}'."
+                    "Search and categorize "
+                    f"{mode_config['search_prompt_article_target']} articles "
+                    f"for topic: '{optimized_query}'."
                     + (
                         f"\n\nFeedback from Auditor: {f}\nSuggestions: {', '.join(s)}"
                         if f
@@ -936,12 +1033,25 @@ class NewsAnalysisCoordinator:
                 articles_data,
                 analysis_mode,
             )
+            fast_mode_adjustments["compact_context_used"] = bool(
+                article_context_stats.get("compact_context_enabled")
+            )
+            fast_mode_adjustments["full_article_count"] = int(
+                article_context_stats.get("article_count") or 0
+            )
+            fast_mode_adjustments["compact_article_count"] = int(
+                article_context_stats.get("compact_article_count") or 0
+            )
+            fast_mode_adjustments["approximate_context_reduction"] = float(
+                article_context_stats.get("reduction_ratio") or 0.0
+            )
             if isinstance(run_metrics, dict):
                 run_metrics["article_context"] = article_context_stats
             if control_state is not None:
                 control_state["article_context_stats"] = article_context_stats
             if results_dict is not None:
                 results_dict["article_context_stats"] = article_context_stats
+            sync_mode_metadata()
 
             # Step 2: Recruiter Agent
             await self._check_controls(control_state)
@@ -999,6 +1109,16 @@ class NewsAnalysisCoordinator:
 
             if not recruit_ok:
                 add_unresolved(recruiter_agent.name, "recruiter")
+
+            skipped_by_fast = apply_fast_optional_module_policy(
+                recruitment_result,
+                analysis_mode,
+            )
+            if skipped_by_fast:
+                fast_mode_adjustments[
+                    "optional_modules_skipped_by_fast_mode"
+                ] = skipped_by_fast
+                sync_mode_metadata()
 
             if control_state is not None:
                 control_state["step_statuses"]["recruiter"] = "completed"

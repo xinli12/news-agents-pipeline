@@ -731,6 +731,64 @@ def test_get_live_news_articles_selection_logic_branches() -> None:
         assert "Article #3\nTitle: Article Center 1" in res_viewpoint
 
 
+def test_fast_news_search_profile_reduces_scrape_volume_only_for_fast() -> None:
+    from unittest.mock import MagicMock, patch
+
+    from agents.search_agent import get_fast_live_news_articles, get_live_news_articles
+
+    dummy_results = [
+        {
+            "title": f"Article {idx}",
+            "url": f"http://source{idx}.example/story",
+            "source": f"Source {idx}",
+            "body": f"body {idx}",
+        }
+        for idx in range(14)
+    ]
+    article_bias = {
+        result["url"]: "CENTER"
+        for result in dummy_results
+    }
+
+    def fake_news(_topic, max_results=10, page=None):
+        if page == 2:
+            return []
+        return dummy_results[:max_results]
+
+    with (
+        patch("agents.search_agent.DDGS") as mock_ddgs,
+        patch("agents.search_agent.classify_search_results") as mock_classify,
+        patch("agents.web_tools.scrape_articles_parallel") as mock_scrape,
+    ):
+        mock_news = MagicMock()
+        mock_ddgs.return_value.__enter__.return_value = mock_news
+        mock_news.news.side_effect = fake_news
+        mock_news.text.return_value = []
+        mock_classify.return_value = {
+            "is_viewpoint_oriented": False,
+            "complexity": "Moderate",
+            "article_bias": article_bias,
+        }
+        mock_scrape.return_value = {}
+
+        balanced_result = get_live_news_articles("Moderate topic")
+        balanced_scraped_urls = mock_scrape.call_args.args[0]
+
+        mock_scrape.reset_mock()
+
+        fast_result = get_fast_live_news_articles("Moderate topic")
+        fast_scraped_urls = mock_scrape.call_args.args[0]
+
+    assert "SEARCH_PROFILE:" not in balanced_result
+    assert "SELECTED_ARTICLES: 14" in balanced_result
+    assert len(balanced_scraped_urls) == 14
+
+    assert "SEARCH_PROFILE: fast" in fast_result
+    assert "SELECTED_ARTICLES: 8" in fast_result
+    assert len(fast_scraped_urls) == 8
+    assert len(fast_scraped_urls) < len(balanced_scraped_urls)
+
+
 def test_is_transient_error_classifies_api_vs_content_failures() -> None:
     from google.genai import errors as genai_errors
 

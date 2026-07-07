@@ -24,6 +24,9 @@ class AnalysisModeConfig:
     max_summary_chars: int
     audit_revision_cycles: int
     light_audit_revision_cycles: int
+    search_profile: str
+    search_prompt_article_target: str
+    fast_optional_module_policy: bool
 
 
 _MODE_CONFIGS: dict[str, AnalysisModeConfig] = {
@@ -36,16 +39,22 @@ _MODE_CONFIGS: dict[str, AnalysisModeConfig] = {
         max_summary_chars=700,
         audit_revision_cycles=2,
         light_audit_revision_cycles=1,
+        search_profile="balanced",
+        search_prompt_article_target="15-18",
+        fast_optional_module_policy=False,
     ),
     "fast": AnalysisModeConfig(
         mode="fast",
         label="Fast",
-        description="Faster, less comprehensive context",
+        description="Quicker briefing with less comprehensive context",
         compact_downstream_context=True,
         downstream_article_limit=10,
         max_summary_chars=700,
         audit_revision_cycles=1,
         light_audit_revision_cycles=0,
+        search_profile="fast",
+        search_prompt_article_target="8-10",
+        fast_optional_module_policy=True,
     ),
     "deep": AnalysisModeConfig(
         mode="deep",
@@ -56,6 +65,9 @@ _MODE_CONFIGS: dict[str, AnalysisModeConfig] = {
         max_summary_chars=700,
         audit_revision_cycles=2,
         light_audit_revision_cycles=1,
+        search_profile="balanced",
+        search_prompt_article_target="15-18",
+        fast_optional_module_policy=False,
     ),
 }
 
@@ -95,6 +107,11 @@ def audit_revision_cycles_for(mode: str | None, stage: str = "default") -> int:
 def max_articles_for_downstream(mode: str | None) -> int | None:
     config = _MODE_CONFIGS[normalize_analysis_mode(mode)]
     return config.downstream_article_limit
+
+
+def search_profile_for_mode(mode: str | None) -> str:
+    config = _MODE_CONFIGS[normalize_analysis_mode(mode)]
+    return config.search_profile
 
 
 def max_articles_for_qa(mode: str | None) -> int | None:
