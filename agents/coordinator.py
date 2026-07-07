@@ -14,6 +14,13 @@ from google.adk.sessions import InMemorySessionService
 from google.adk.utils.context_utils import Aclosing
 from google.genai import types
 
+from agents.app_utils.analysis_mode import (
+    article_context_stats_for_mode,
+    audit_revision_cycles_for,
+    build_articles_context_for_mode,
+    get_analysis_mode_config,
+    normalize_analysis_mode,
+)
 from agents.app_utils.run_metrics import (
     extract_event_token_usage,
     merge_usage_counts,
@@ -596,6 +603,7 @@ class NewsAnalysisCoordinator:
         results_dict: dict[str, Any] | None = None,
         model_name: str = "gemini-3.1-flash-lite",
         bypass_input_check: bool = False,
+        analysis_mode: str = "balanced",
     ) -> dict:
         """Runs the news analysis pipeline and returns the final results map directly (for CLI/UI compatibility)."""
         session_id = f"sess_{uuid.uuid4().hex[:8]}"
@@ -622,6 +630,7 @@ class NewsAnalysisCoordinator:
             results_dict=local_results,
             model_name=model_name,
             bypass_input_check=bypass_input_check,
+            analysis_mode=analysis_mode,
         ):
             await self.session_service.append_event(session, event)
         return local_results
@@ -636,9 +645,26 @@ class NewsAnalysisCoordinator:
         results_dict: dict[str, Any] | None = None,
         model_name: str = "gemini-3.1-flash-lite",
         bypass_input_check: bool = False,
+        analysis_mode: str = "balanced",
     ) -> AsyncGenerator[Event, None]:
         """Runs the news analysis pipeline sequentially with modular sub-agents and audit gates."""
         os.environ["CURRENT_MODEL"] = model_name
+        analysis_mode = normalize_analysis_mode(analysis_mode)
+        mode_config = get_analysis_mode_config(analysis_mode)
+
+        if control_state is not None:
+            control_state["analysis_mode"] = analysis_mode
+            control_state["analysis_mode_label"] = mode_config["label"]
+
+        run_metrics = self._run_metrics_from_control_state(control_state)
+        if isinstance(run_metrics, dict):
+            run_metrics["analysis_mode"] = analysis_mode
+            run_metrics["analysis_mode_label"] = mode_config["label"]
+            run_metrics["analysis_mode_description"] = mode_config["description"]
+
+        if results_dict is not None:
+            results_dict["analysis_mode"] = analysis_mode
+            results_dict["analysis_mode_label"] = mode_config["label"]
 
         async def call_callback(step: str, message: str, payload: dict | None = None):
             if not progress_callback:
@@ -686,8 +712,16 @@ class NewsAnalysisCoordinator:
         # bad decision without doubling its LLM-call cost on every run. The Input
         # Check Agent has no audit gate at all (see the plain `_run_agent` call
         # below, not `_run_agent_with_audit`) and always proceeds on its result.
-        audit_revision_cycles = 2 if enable_editor else 0
-        light_revision_cycles = 1 if enable_editor else 0
+        audit_revision_cycles = (
+            audit_revision_cycles_for(analysis_mode, "default")
+            if enable_editor
+            else 0
+        )
+        light_revision_cycles = (
+            audit_revision_cycles_for(analysis_mode, "recruiter")
+            if enable_editor
+            else 0
+        )
 
         def add_unresolved(agent_name: str, step_name: str):
             related_logs = [
@@ -716,6 +750,8 @@ class NewsAnalysisCoordinator:
         public_editor_report = ""
         public_editor_warnings = []
         optimized_query = topic
+        articles_prompt_context = None
+        article_context_stats = {}
 
         try:
             # Step 0: Input Check Agent
@@ -763,6 +799,8 @@ class NewsAnalysisCoordinator:
                 if control_state is not None:
                     control_state["step_statuses"]["input_check"] = "failed"
                 res = {
+                    "analysis_mode": analysis_mode,
+                    "analysis_mode_label": mode_config["label"],
                     "input_checked": False,
                     "input_check_result": input_check_result,
                     "editor_logs": editor_logs,
@@ -835,6 +873,8 @@ class NewsAnalysisCoordinator:
                 if control_state is not None:
                     control_state["step_statuses"]["search"] = "failed"
                 res = {
+                    "analysis_mode": analysis_mode,
+                    "analysis_mode_label": mode_config["label"],
                     "input_checked": True,
                     "search_failed": True,
                     "topic": topic,
@@ -860,6 +900,8 @@ class NewsAnalysisCoordinator:
                 if control_state is not None:
                     control_state["step_statuses"]["search"] = "failed"
                 res = {
+                    "analysis_mode": analysis_mode,
+                    "analysis_mode_label": mode_config["label"],
                     "input_checked": True,
                     "search_failed": True,
                     "topic": topic,
@@ -886,6 +928,21 @@ class NewsAnalysisCoordinator:
 
             await call_callback("search_complete", "Search complete.", articles_data)
 
+            articles_prompt_context = build_articles_context_for_mode(
+                articles_data,
+                analysis_mode,
+            )
+            article_context_stats = article_context_stats_for_mode(
+                articles_data,
+                analysis_mode,
+            )
+            if isinstance(run_metrics, dict):
+                run_metrics["article_context"] = article_context_stats
+            if control_state is not None:
+                control_state["article_context_stats"] = article_context_stats
+            if results_dict is not None:
+                results_dict["article_context_stats"] = article_context_stats
+
             # Step 2: Recruiter Agent
             await self._check_controls(control_state)
             if control_state is not None:
@@ -897,7 +954,7 @@ class NewsAnalysisCoordinator:
 
             def recruiter_prompt_gen(f, s):
                 return (
-                    f"Analyze these articles and decide agent recruitment:\n{articles_data}"
+                    f"Analyze these articles and decide agent recruitment:\n{articles_prompt_context}"
                     + (
                         f"\n\nFeedback from Auditor: {f}\nSuggestions: {', '.join(s)}"
                         if f
@@ -991,7 +1048,7 @@ class NewsAnalysisCoordinator:
 
                 def fact_prompt_gen(f, s):
                     return (
-                        f"Topic: {topic}\nAnalyze these articles to find verified consensus facts and timeline:\n{articles_data}"
+                        f"Topic: {topic}\nAnalyze these articles to find verified consensus facts and timeline:\n{articles_prompt_context}"
                         + (
                             f"\n\nFeedback from Auditor: {f}\nSuggestions: {', '.join(s)}"
                             if f
@@ -1037,7 +1094,7 @@ class NewsAnalysisCoordinator:
 
                     def dispute_prompt_gen(f, s):
                         return (
-                            f"Topic: {topic}\nAnalyze these articles and extract contradictory claims:\n{articles_data}"
+                            f"Topic: {topic}\nAnalyze these articles and extract contradictory claims:\n{articles_prompt_context}"
                             + (
                                 f"\n\nFeedback from Auditor: {f}\nSuggestions: {', '.join(s)}"
                                 if f
@@ -1089,7 +1146,7 @@ class NewsAnalysisCoordinator:
                         return (
                             f"Topic: {topic}\n"
                             "Classification Axis: Dynamically determined by you based on the articles\n"
-                            f"Analyze framing & omissions:\n{articles_data}"
+                            f"Analyze framing & omissions:\n{articles_prompt_context}"
                             + (
                                 f"\n\nFeedback from Auditor: {f}\nSuggestions: {', '.join(s)}"
                                 if f
@@ -1474,6 +1531,9 @@ class NewsAnalysisCoordinator:
             )
 
             final_res = {
+                "analysis_mode": analysis_mode,
+                "analysis_mode_label": mode_config["label"],
+                "article_context_stats": article_context_stats,
                 "input_checked": True,
                 "topic": topic,
                 "optimized_query": optimized_query,
@@ -1502,6 +1562,9 @@ class NewsAnalysisCoordinator:
                     if status in ["queued", "running"]:
                         control_state["step_statuses"][step] = "stopped"
             partial_res = {
+                "analysis_mode": analysis_mode,
+                "analysis_mode_label": mode_config["label"],
+                "article_context_stats": article_context_stats,
                 "input_checked": "input_check_result" in locals()
                 and input_check_result is not None,
                 "topic": topic,

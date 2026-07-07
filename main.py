@@ -19,6 +19,7 @@ from rich.progress import (
 )
 from rich.table import Table
 
+from agents.app_utils.analysis_mode import normalize_analysis_mode
 from agents.app_utils.run_metrics import STEP_KEYS, STEP_LABELS
 from agents.coordinator import NewsAnalysisCoordinator
 
@@ -237,13 +238,15 @@ def render_audit_trail_panel(
         console.print()
 
 
-async def run_cli(topic: str):
+async def run_cli(topic: str, analysis_mode: str = "balanced"):
+    analysis_mode = normalize_analysis_mode(analysis_mode)
     console.print("\n[bold blue]NewsLens Multi-Agent Desk[/bold blue]")
     console.print(
         "[dim]Search, verify, compare perspectives, and audit a news topic "
         "before reading the final briefing.[/dim]"
     )
     console.print(f'[bold dim]Topic:[/bold dim] [yellow]"{topic}"[/yellow]\n')
+    console.print(f"[dim]Analysis mode: {analysis_mode.title()}[/dim]\n")
 
     coordinator = NewsAnalysisCoordinator()
     control_state: dict = {}
@@ -514,7 +517,10 @@ async def run_cli(topic: str):
     try:
         with progress:
             results = await coordinator.analyze(
-                topic, progress_callback, control_state=control_state
+                topic,
+                progress_callback,
+                control_state=control_state,
+                analysis_mode=analysis_mode,
             )
             progress.update(progress_task, completed=100, label="Done")
 
@@ -586,7 +592,7 @@ async def run_cli(topic: str):
         sys.exit(1)
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Multi-agent News Bias & Consensus Analyzer CLI"
     )
@@ -596,6 +602,17 @@ def main():
         required=True,
         help="The news topic or headline to search and analyze.",
     )
+    parser.add_argument(
+        "--analysis-mode",
+        choices=("fast", "balanced", "deep"),
+        default="balanced",
+        help="Runtime mode. Balanced preserves default behavior.",
+    )
+    return parser
+
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
 
     # Check for Gemini API key
@@ -607,7 +624,7 @@ def main():
         )
         sys.exit(1)
 
-    asyncio.run(run_cli(args.topic))
+    asyncio.run(run_cli(args.topic, analysis_mode=args.analysis_mode))
 
 
 if __name__ == "__main__":
