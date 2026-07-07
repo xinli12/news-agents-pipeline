@@ -110,10 +110,18 @@ def build_compact_articles_data(
     return compact
 
 
-def article_context_stats(articles_data: dict) -> dict:
+def article_context_stats(
+    articles_data: dict,
+    max_articles: int | None = None,
+    max_summary_chars: int = 700,
+) -> dict:
     """Return approximate JSON-size stats for full and compact article context."""
     source_data = _as_dict(articles_data)
-    compact_data = build_compact_articles_data(source_data)
+    compact_data = build_compact_articles_data(
+        source_data,
+        max_articles=max_articles,
+        max_summary_chars=max_summary_chars,
+    )
     original_json_chars = _json_size(source_data)
     compact_json_chars = _json_size(compact_data)
     reduction_chars = max(0, original_json_chars - compact_json_chars)

@@ -11,6 +11,10 @@ import streamlit as st
 import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
+from agents.app_utils.analysis_mode import (
+    get_analysis_mode_config,
+    normalize_analysis_mode,
+)
 from agents.app_utils.run_metrics import (
     build_metrics_summary,
     create_run_metrics,
@@ -1920,13 +1924,17 @@ def render_analysis_details_column(
 def render_run_metrics(metrics: dict) -> None:
     st.markdown("### Run metrics")
     summary = build_metrics_summary(metrics)
-    metric_cols = st.columns(6)
+    mode_label = metrics.get("analysis_mode_label") or str(
+        metrics.get("analysis_mode") or "balanced"
+    ).title()
+    metric_cols = st.columns(7)
     metric_cols[0].metric("Runtime", summary["total_runtime"])
     metric_cols[1].metric("Status", str(summary["final_status"]).title())
     metric_cols[2].metric("Model", summary["model_name"] or "-")
     metric_cols[3].metric("Agent/step calls", summary["agent_calls"])
     metric_cols[4].metric("Audit attempts", summary["audit_attempts"])
     metric_cols[5].metric("Warnings", summary["warning_count"])
+    metric_cols[6].metric("Mode", mode_label)
 
     token_usage = metrics.get("token_usage") or {}
     cost = metrics.get("cost_estimate") or {}
@@ -1967,6 +1975,18 @@ def render_run_metrics(metrics: dict) -> None:
         st.dataframe(pd.DataFrame(step_rows), use_container_width=True, hide_index=True)
     else:
         st.caption("Step duration data is not available yet.")
+
+    context_stats = metrics.get("article_context") or {}
+    if context_stats:
+        full_count = context_stats.get("article_count", 0)
+        compact_count = context_stats.get("compact_article_count", 0)
+        reduction = context_stats.get("reduction_ratio", 0) or 0
+        compact_enabled = context_stats.get("compact_context_enabled")
+        context_label = "used" if compact_enabled else "available"
+        st.caption(
+            f"Compact article context {context_label}: {compact_count}/{full_count} "
+            f"articles; approximate size reduction {reduction:.0%}."
+        )
 
 
 def deterministic_verification_reports(results: dict) -> list[tuple[dict, dict]]:
@@ -2086,10 +2106,16 @@ def render_diagnostics(results: dict, state: dict) -> None:
         diagnostics_label = f"Why trust this analysis? ({audit_count} review note(s))"
 
     with st.expander(diagnostics_label, expanded=False):
-        diag_cols = st.columns(3)
+        diag_cols = st.columns(4)
         diag_cols[0].metric("Run status", display_run_status(state))
         diag_cols[1].metric("Model", state.get("model_name", ""))
         diag_cols[2].metric("Topic", state.get("topic", ""))
+        mode_label = (
+            state.get("analysis_mode_label")
+            or results.get("analysis_mode_label")
+            or str(state.get("analysis_mode") or results.get("analysis_mode") or "balanced").title()
+        )
+        diag_cols[3].metric("Analysis mode", mode_label)
         if state.get("restored_snapshot"):
             st.caption(
                 "Restored snapshot: yes"
@@ -2127,6 +2153,7 @@ def worker_thread_fn(
     topic: str,
     enable_editor: bool,
     model_name: str,
+    analysis_mode: str,
     bypass_input_check: bool,
     shared_state: dict,
 ):
@@ -2163,6 +2190,7 @@ def worker_thread_fn(
                 control_state=shared_state,
                 results_dict=shared_state["results"],
                 model_name=model_name,
+                analysis_mode=analysis_mode,
                 bypass_input_check=bypass_input_check,
             )
         )
@@ -2308,6 +2336,23 @@ with st.expander("Settings", expanded=False):
         }
         selected_model = MODEL_MAPPING[model_display]
     with settings_col_2:
+        analysis_mode_display = st.selectbox(
+            "Analysis mode",
+            options=[
+                "Balanced (Recommended)",
+                "Fast (Faster, less comprehensive context)",
+                "Deep (Full-depth analysis)",
+            ],
+            index=0,
+            help="Fast reduces downstream article context size. Balanced preserves the default analysis behavior.",
+        )
+        ANALYSIS_MODE_MAPPING = {
+            "Balanced (Recommended)": "balanced",
+            "Fast (Faster, less comprehensive context)": "fast",
+            "Deep (Full-depth analysis)": "deep",
+        }
+        selected_analysis_mode = ANALYSIS_MODE_MAPPING[analysis_mode_display]
+
         enable_editor = st.toggle(
             "Allow audit revisions",
             value=True,
@@ -2318,17 +2363,25 @@ with st.expander("Settings", expanded=False):
 def build_initial_shared_state(
     topic_query: str,
     model_name: str,
+    analysis_mode: str,
     start_timestamp: float,
 ) -> dict:
+    analysis_mode = normalize_analysis_mode(analysis_mode)
+    mode_config = get_analysis_mode_config(analysis_mode)
     run_id = (
         f"{time.strftime('%Y%m%d-%H%M%S', time.gmtime(start_timestamp))}-"
         f"{uuid.uuid4().hex[:8]}"
     )
     run_metrics = create_run_metrics(model_name, start_timestamp=start_timestamp)
+    run_metrics["analysis_mode"] = analysis_mode
+    run_metrics["analysis_mode_label"] = mode_config["label"]
+    run_metrics["analysis_mode_description"] = mode_config["description"]
     return {
         "run_id": run_id,
         "status": "running",
         "topic": topic_query,
+        "analysis_mode": analysis_mode,
+        "analysis_mode_label": mode_config["label"],
         "current_step": "Spawning pipeline...",
         "progress_logs": [
             {
@@ -2339,6 +2392,8 @@ def build_initial_shared_state(
         ],
         "results": {
             "input_checked": True,
+            "analysis_mode": analysis_mode,
+            "analysis_mode_label": mode_config["label"],
             "topic": topic_query,
             "optimized_query": topic_query,
             "input_check_result": {},
@@ -2378,11 +2433,13 @@ def start_workflow(
     topic_query: str,
     model_name: str,
     enable_editor_flag: bool,
+    analysis_mode: str,
     bypass_input_check: bool = False,
 ):
     shared_state = build_initial_shared_state(
         topic_query,
         model_name,
+        analysis_mode,
         start_timestamp=time.time(),
     )
 
@@ -2407,6 +2464,7 @@ def start_workflow(
             topic_query,
             enable_editor_flag,
             model_name,
+            shared_state["analysis_mode"],
             bypass_input_check,
             shared_state,
         ),
@@ -2468,6 +2526,7 @@ if submit:
             topic.strip(),
             selected_model,
             enable_editor,
+            selected_analysis_mode,
             bypass_input_check=False,
         )
 

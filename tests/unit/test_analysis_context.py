@@ -167,3 +167,24 @@ def test_article_context_stats_returns_useful_size_stats() -> None:
     assert stats["original_json_chars"] > stats["compact_json_chars"]
     assert stats["reduction_chars"] > 0
     assert 0 < stats["reduction_ratio"] < 1
+
+
+def test_article_context_stats_respects_compact_limits() -> None:
+    articles_data = {
+        "topic": "Policy topic",
+        "articles": [
+            _article(url="https://example.com/1", full_content_snippet="N" * 1000),
+            _article(url="https://example.com/2", full_content_snippet="N" * 1000),
+            _article(url="https://example.com/3", full_content_snippet="N" * 1000),
+        ],
+    }
+
+    stats = article_context_stats(
+        articles_data,
+        max_articles=2,
+        max_summary_chars=200,
+    )
+
+    assert stats["article_count"] == 3
+    assert stats["compact_article_count"] == 2
+    assert stats["compact_json_chars"] < stats["original_json_chars"]
