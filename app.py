@@ -2090,6 +2090,13 @@ def render_run_metrics(metrics: dict) -> None:
             f"Compact article context {context_label}: {compact_count}/{full_count} "
             f"articles; approximate size reduction {reduction:.0%}."
         )
+    fast_adjustments = metrics.get("fast_mode_adjustments") or {}
+    if fast_adjustments.get("enabled"):
+        skipped = fast_adjustments.get("optional_modules_skipped_by_fast_mode") or []
+        st.caption(
+            "Fast mode uses a smaller source context to reduce latency."
+            + (f" Optional modules skipped: {', '.join(skipped)}." if skipped else "")
+        )
 
 
 def deterministic_verification_reports(results: dict) -> list[tuple[dict, dict]]:
@@ -2219,6 +2226,13 @@ def render_diagnostics(results: dict, state: dict) -> None:
             or str(state.get("analysis_mode") or results.get("analysis_mode") or "balanced").title()
         )
         diag_cols[3].metric("Analysis mode", mode_label)
+        fast_adjustments = (
+            state.get("fast_mode_adjustments")
+            or results.get("fast_mode_adjustments")
+            or {}
+        )
+        if fast_adjustments.get("enabled"):
+            st.caption("Fast mode uses a smaller source context to reduce latency.")
         if state.get("restored_snapshot"):
             st.caption(
                 "Restored snapshot: yes"
@@ -2454,15 +2468,15 @@ with st.expander("Settings", expanded=False):
             "Analysis mode",
             options=[
                 "Balanced (Recommended)",
-                "Fast (Faster, less comprehensive context)",
+                "Fast — quicker briefing with less comprehensive context",
                 "Deep (Full-depth analysis)",
             ],
             index=0,
-            help="Fast reduces downstream article context size. Balanced preserves the default analysis behavior.",
+            help="Fast uses smaller source and downstream context. Balanced preserves the default analysis behavior.",
         )
         ANALYSIS_MODE_MAPPING = {
             "Balanced (Recommended)": "balanced",
-            "Fast (Faster, less comprehensive context)": "fast",
+            "Fast — quicker briefing with less comprehensive context": "fast",
             "Deep (Full-depth analysis)": "deep",
         }
         selected_analysis_mode = ANALYSIS_MODE_MAPPING[analysis_mode_display]
