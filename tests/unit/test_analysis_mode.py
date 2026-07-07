@@ -195,7 +195,6 @@ def test_normalize_analysis_mode_defaults_to_balanced() -> None:
 
 def test_analysis_mode_configs_preserve_balanced_defaults() -> None:
     balanced = get_analysis_mode_config("balanced")
-    deep = get_analysis_mode_config("deep")
 
     assert balanced["mode"] == "balanced"
     assert balanced["compact_downstream_context"] is False
@@ -205,12 +204,20 @@ def test_analysis_mode_configs_preserve_balanced_defaults() -> None:
     assert audit_revision_cycles_for("balanced", "default") == 2
     assert audit_revision_cycles_for("balanced", "recruiter") == 1
 
+
+def test_deep_mode_uses_a_larger_pool_and_extra_audit_cycles() -> None:
+    deep = get_analysis_mode_config("deep")
+
     assert deep["mode"] == "deep"
+    # Deep should never fall back to the compact/limited context Fast mode
+    # uses -- it's meant to see strictly more than Balanced, not less.
     assert deep["compact_downstream_context"] is False
-    assert deep["search_profile"] == "balanced"
+    assert deep["downstream_article_limit"] is None
+    assert deep["search_profile"] == "deep"
+    assert deep["search_prompt_article_target"] == "18-24"
     assert deep["fast_optional_module_policy"] is False
-    assert audit_revision_cycles_for("deep", "default") == 2
-    assert audit_revision_cycles_for("deep", "recruiter") == 1
+    assert audit_revision_cycles_for("deep", "default") == 3
+    assert audit_revision_cycles_for("deep", "recruiter") == 2
 
 
 def test_fast_mode_uses_compact_context_and_lighter_audit_cycles() -> None:
@@ -385,6 +392,46 @@ def test_balanced_coordinator_uses_full_context_and_no_fast_skips() -> None:
     assert adjustments["audit_revision_cycles_used"] == {
         "default": 2,
         "recruiter": 1,
+    }
+    assert adjustments["optional_modules_skipped_by_fast_mode"] == []
+    assert control_state["step_statuses"]["expert"] == "completed"
+    assert control_state["step_statuses"]["outlook"] == "completed"
+    assert results["articles"] is articles_data
+    assert run_metrics["fast_mode_adjustments"] == adjustments
+
+
+def test_deep_coordinator_uses_full_context_extra_audits_and_no_fast_skips() -> None:
+    recruitment = {
+        "recruit_dispute": False,
+        "recruit_perspective": False,
+        "recruit_expert": True,
+        "recruit_future_outlook": True,
+        "recruitment_justification": "Low complexity but optional modules suggested.",
+        "complexity_level": "low",
+        "recruited_agents": [
+            "Expert Agent",
+            "Future Outlook Agent",
+        ],
+        "skipped_agents": [],
+    }
+
+    results, captured, control_state, run_metrics, articles_data = asyncio.run(
+        _run_mocked_pipeline(analysis_mode="deep", recruitment_result=recruitment)
+    )
+
+    recruiter_prompt = captured["prompts"]["recruiter"]
+    fact_prompt = captured["prompts"]["fact_bias"]
+    assert "FULL_ARTICLE_BODY_SHOULD_STAY_STORED_0" in recruiter_prompt
+    assert "FULL_ARTICLE_BODY_SHOULD_STAY_STORED_0" in fact_prompt
+    assert "article_count_included" not in recruiter_prompt
+
+    adjustments = results["fast_mode_adjustments"]
+    assert adjustments["enabled"] is False
+    assert adjustments["source_search_profile"] == "deep"
+    assert adjustments["compact_context_used"] is False
+    assert adjustments["audit_revision_cycles_used"] == {
+        "default": 3,
+        "recruiter": 2,
     }
     assert adjustments["optional_modules_skipped_by_fast_mode"] == []
     assert control_state["step_statuses"]["expert"] == "completed"

@@ -9,14 +9,26 @@ The project is intended for learning and experimentation only, not commercial us
 | Capability | Current implementation |
 | --- | --- |
 | Input check | Validates user input and returns one of four actions: Accept, Accept with notification, Reject with confirmation, or Convert. |
-| Live search | Uses DuckDuckGo via `ddgs`, falls back from news search to text search, and builds a candidate pool of up to 40 raw results. |
+| Live search | Uses DuckDuckGo via `ddgs`, always supplements news results with a general text search (not just as a failure fallback), and builds a candidate pool of up to 55 raw results per search call in Balanced mode (80 in Deep mode, 30 news + 24 text in Fast mode); see [Analysis Modes](#analysis-modes). |
 | Deduplication | Removes duplicate URLs and collapses likely wire-service or reprint clusters before analysis. |
 | Article enrichment | Scrapes selected articles with Jina Reader first, then BeautifulSoup/lxml as a fallback. |
 | Source analysis | Classifies article-level bias/framing and tone neutrality, and preserves source-balance metadata. |
-| Modular agents | Recruits dispute, perspective, expert, and future-outlook agents only when the topic appears to need them. |
+| Modular agents | Recruits dispute, perspective, expert, and future-outlook agents only when the topic appears to need them; Fast mode additionally force-skips the Expert and Future Outlook agents for low-complexity topics. |
 | Dynamic expert panel | The Expert Agent selects 2-3 relevant professional domains at runtime, then spawns exactly that many domain-expert agents in parallel and synthesizes a roundtable summary. |
-| Audit loop | Runs audit agents on every stage after input check, with bounded revision cycles (tiered by risk), and surfaces unresolved warnings. The Input Check Agent itself has no audit gate. |
+| Audit loop | Runs audit agents on every stage after input check, with bounded revision cycles (tiered by risk and analysis mode), and surfaces unresolved warnings. The Input Check Agent itself has no audit gate. |
 | Public output | Produces a concise public report, a folded dashboard report assembled by a deterministic renderer (no LLM call), and a Streamlit dashboard with Analysis Details, Briefing, and collapsed trust diagnostics. |
+
+## Analysis Modes
+
+Both the Streamlit dashboard and the CLI (`--analysis-mode`) expose three runtime modes; `balanced` is the default in each.
+
+| Mode | Search candidate pool | Scrape budget (Simple/Moderate/High) | Audit revision cycles (stage / recruiter) | Downstream context | Optional modules |
+| --- | --- | --- | --- | --- | --- |
+| Balanced | 55 raw news + 55 raw text results per search call | 8 / 15 / 24 articles | 2 / 1 | Full article context passed to every downstream agent | Recruiter Agent decides normally |
+| Deep | 80 raw news + 80 raw text results per search call | 12 / 22 / 32 articles | 3 / 2 | Full article context passed to every downstream agent | Recruiter Agent decides normally |
+| Fast | 30 raw news + 24 raw text results per search call | 5 / 8 / 10 articles | 1 / 0 | Compact context: capped at 10 articles, summaries/snippets truncated to 700 characters | Expert and Future Outlook agents are force-skipped when the Recruiter Agent rates the topic low/simple complexity |
+
+The search-side numbers come from `SEARCH_PROFILES` in `agents/search_agent.py`; the rest of the per-mode settings live in `agents/app_utils/analysis_mode.py`.
 
 ## Architecture
 
@@ -121,8 +133,10 @@ uv run streamlit run app.py
 CLI:
 
 ```bash
-uv run python main.py --topic "Federal Reserve interest rate decision"
+uv run python main.py --topic "Federal Reserve interest rate decision" --analysis-mode balanced
 ```
+
+`--analysis-mode` accepts `fast`, `balanced` (default), or `deep`; see [Analysis Modes](#analysis-modes).
 
 ADK FastAPI server:
 
@@ -167,7 +181,7 @@ agents-cli eval grade --config tests/eval/eval_config.yaml
 ## Configuration
 
 - `GEMINI_API_KEY` or `GOOGLE_API_KEY`: required for live agent runs.
-- `CURRENT_MODEL`: set internally by the coordinator from the selected model. The Streamlit selector currently defaults to Gemini 3.5 Flash; non-UI coordinator calls fall back to `gemini-3.1-flash-lite` unless a caller passes a model.
+- `CURRENT_MODEL`: set internally by the coordinator from the selected model. The Streamlit selector currently defaults to Gemini 3.1 Flash Lite; non-UI coordinator calls fall back to `gemini-3.1-flash-lite` unless a caller passes a model.
 - `LOGS_BUCKET_NAME`: optional GCS bucket for ADK artifact/telemetry paths in deployed environments.
 - `ALLOW_ORIGINS`: optional comma-separated CORS allowlist for the FastAPI app.
 
