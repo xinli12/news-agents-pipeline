@@ -659,6 +659,42 @@ PIPELINE_STEPS = [
 ACTIVE_RUN_STATUSES = {"running", "paused", "stopping"}
 CONTENT_LOADING_STATUSES = {"running", "paused"}
 
+USER_PROGRESS_COPY = {
+    "init": "Preparing a new analysis run.",
+    "input_check": "Checking whether the topic can be analyzed.",
+    "search": "Searching and verifying source coverage.",
+    "recruiter": "Planning the analysis workflow.",
+    "fact_bias": "Extracting consensus facts.",
+    "dispute": "Mapping key disputes.",
+    "bias_agent": "Comparing perspectives across source groups.",
+    "expert": "Preparing expert context.",
+    "outlook": "Preparing outlook scenarios.",
+    "public_report": "Drafting the briefing.",
+    "public_editor": "Preparing the report view.",
+    "editor": "Finishing quality checks.",
+    "stop_requested": "Stopping this analysis.",
+}
+USER_PROGRESS_COMPLETE_COPY = {
+    "input_check": "Topic check complete.",
+    "search": "Source search complete.",
+    "recruiter": "Analysis plan ready.",
+    "fact_bias": "Consensus facts ready.",
+    "dispute": "Dispute map ready.",
+    "bias_agent": "Perspective comparison ready.",
+    "expert": "Expert context ready.",
+    "outlook": "Outlook scenarios ready.",
+    "public_report": "Briefing draft ready.",
+    "public_editor": "Report view ready.",
+    "editor": "Quality checks complete.",
+}
+PROGRESS_STEP_SUFFIXES = (
+    "_approved",
+    "_complete",
+    "_completed",
+    "_rejected",
+    "_audit",
+)
+
 
 def friendly_agent_name(name: str | None) -> str:
     display_names = {
@@ -809,10 +845,76 @@ def active_step_label(step_statuses: dict, fallback: str | None = None) -> str:
     return fallback or "Waiting for next step"
 
 
+def active_step_key(step_statuses: dict | None) -> str | None:
+    for step_key, _label in PIPELINE_STEPS:
+        if (step_statuses or {}).get(step_key) in {"running", "paused"}:
+            return step_key
+    return None
+
+
+def base_progress_step(step: str | None) -> tuple[str, str]:
+    step_key = str(step or "").lower().strip()
+    for suffix in PROGRESS_STEP_SUFFIXES:
+        if step_key.endswith(suffix):
+            return step_key[: -len(suffix)], suffix
+    if step_key.startswith("expert_"):
+        return "expert", ""
+    return step_key, ""
+
+
+def friendly_progress_message(
+    step: str | None,
+    message: str | None,
+    step_statuses: dict | None = None,
+    status: str | None = None,
+) -> str:
+    status_key = str(status or "").lower()
+    if status_key == "stopping":
+        return "Stopping this analysis."
+    if status_key == "stopped":
+        return "Analysis stopped. Showing partial results from this run."
+    if status_key == "completed":
+        return "Final briefing is ready."
+
+    raw_message = " ".join(str(message or "").split())
+    raw_lower = raw_message.lower()
+    step_key, suffix = base_progress_step(step)
+    if not step_key:
+        step_key = active_step_key(step_statuses) or ""
+
+    stage_copy = USER_PROGRESS_COPY.get(step_key)
+    if suffix == "_audit" or "auditing" in raw_lower:
+        return "Reviewing this section for quality."
+    if suffix == "_approved" and step_key == "input_check":
+        return "Topic check complete."
+    if suffix == "_approved" or "approved by audit agent" in raw_lower:
+        return "Quality check completed for this section."
+    if suffix == "_rejected" or "rejected" in raw_lower or "revision" in raw_lower:
+        return "Refining this section after review notes."
+    if suffix in {"_complete", "_completed"}:
+        return USER_PROGRESS_COMPLETE_COPY.get(step_key, "Step complete.")
+    if stage_copy:
+        return stage_copy
+
+    internal_terms = ("agent", "audit", "spawning", "recruiting", "attempt")
+    if any(term in raw_lower for term in internal_terms):
+        return "Preparing the next analysis step."
+    return raw_message or active_step_label(step_statuses or {})
+
+
+def display_current_step(state: dict) -> str:
+    return friendly_progress_message(
+        None,
+        state.get("current_step"),
+        state.get("step_statuses") or {},
+        state.get("status"),
+    )
+
+
 def run_status_copy(
     status: str | None, step_statuses: dict, current_step: str | None
 ) -> tuple[str, str, str]:
-    detail = current_step or active_step_label(step_statuses)
+    detail = friendly_progress_message(None, current_step, step_statuses, status)
     status_key = str(status or "running")
     if status_key == "running":
         return "running", "Pipeline running", detail
@@ -844,6 +946,7 @@ def request_stop(state: dict) -> None:
         {
             "step": "stop_requested",
             "message": "Stop requested by user.",
+            "display_message": "Stopping this analysis.",
             "timestamp": time.time(),
         }
     )
@@ -919,7 +1022,7 @@ def render_primary_progress(state: dict) -> None:
         st.progress(progress)
         st.markdown(
             f'<div class="progress-caption">{int(progress * 100)}% complete · '
-            f"Current step: {safe_text(active_step_label(step_statuses, detail))}</div>",
+            f"Current step: {safe_text(display_current_step(state))}</div>",
             unsafe_allow_html=True,
         )
 
@@ -2165,10 +2268,21 @@ def worker_thread_fn(
 
     async def progress_callback(step: str, message: str, payload: dict | None = None):
         timestamp = time.time()
-        shared_state["progress_logs"].append(
-            {"step": step, "message": message, "timestamp": timestamp}
+        display_message = friendly_progress_message(
+            step,
+            message,
+            shared_state.get("step_statuses") or {},
+            shared_state.get("status"),
         )
-        shared_state["current_step"] = message
+        shared_state["progress_logs"].append(
+            {
+                "step": step,
+                "message": message,
+                "display_message": display_message,
+                "timestamp": timestamp,
+            }
+        )
+        shared_state["current_step"] = display_message
         run_metrics = shared_state.get("run_metrics")
         if isinstance(run_metrics, dict):
             try:
@@ -2382,11 +2496,12 @@ def build_initial_shared_state(
         "topic": topic_query,
         "analysis_mode": analysis_mode,
         "analysis_mode_label": mode_config["label"],
-        "current_step": "Spawning pipeline...",
+        "current_step": "Preparing a new analysis run.",
         "progress_logs": [
             {
                 "step": "init",
                 "message": "Initializing news intelligence desk...",
+                "display_message": "Preparing a new analysis run.",
                 "timestamp": start_timestamp,
             }
         ],
@@ -2489,9 +2604,14 @@ def render_restore_panel(snapshot: dict) -> None:
         snapshot_cols[1].metric("Saved", saved_at)
         snapshot_cols[2].metric("Status", str(status).title())
 
-        action_cols = st.columns(2)
+        st.caption(
+            "This only deletes local saved snapshots. It does not affect GitHub "
+            "or source data."
+        )
+
+        action_cols = st.columns(3)
         if action_cols[0].button(
-            "Restore previous snapshot",
+            "Restore latest analysis",
             type="primary",
             use_container_width=True,
         ):
@@ -2504,6 +2624,18 @@ def render_restore_panel(snapshot: dict) -> None:
 
         if action_cols[1].button("Start fresh", use_container_width=True):
             st.session_state["skip_snapshot_restore"] = True
+            st.rerun()
+
+        if action_cols[2].button(
+            "Clear saved runs",
+            use_container_width=True,
+            help="Remove local display snapshots from this machine only.",
+        ):
+            clear_saved_runs()
+            st.session_state["skip_snapshot_restore"] = True
+            st.session_state.pop("shared_state", None)
+            st.session_state.pop("chat_messages", None)
+            st.session_state["saved_runs_cleared"] = True
             st.rerun()
 
 
@@ -2533,6 +2665,9 @@ if submit:
 
 # --- Display Content Area ---
 if "shared_state" not in st.session_state:
+    if st.session_state.pop("saved_runs_cleared", False):
+        st.success("Saved run snapshots cleared from this computer.")
+
     if not st.session_state.get("skip_snapshot_restore"):
         try:
             latest_snapshot = load_latest_run_snapshot()
@@ -2595,7 +2730,7 @@ with st.sidebar:
     if status == "running":
         st.markdown(
             f'<div class="status-indicator running">⚙️ Pipeline Running:<br>'
-            f"<strong>{safe_text(state.get('current_step', 'Processing'))}</strong></div>",
+            f"<strong>{safe_text(display_current_step(state))}</strong></div>",
             unsafe_allow_html=True,
         )
     elif status == "paused":
@@ -2663,13 +2798,19 @@ with st.sidebar:
     render_progress_stepper(step_statuses)
 
     # Collapsible Logs
-    with st.expander("Execution Logs", expanded=True):
+    with st.expander("Progress details", expanded=False):
         logs = state.get("progress_logs", [])
         for log in reversed(logs):
             t_str = time.strftime(
                 "%H:%M:%S", time.localtime(log.get("timestamp", time.time()))
             )
-            st.markdown(f"`{t_str}` - {log.get('message')}")
+            display_message = log.get("display_message") or friendly_progress_message(
+                log.get("step"),
+                log.get("message"),
+                step_statuses,
+                None,
+            )
+            st.markdown(f"`{t_str}` - {display_message}")
 
 
 render_run_notices(results)
