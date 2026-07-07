@@ -9,7 +9,7 @@ The project is intended for learning and experimentation only, not commercial us
 | Capability | Current implementation |
 | --- | --- |
 | Input check | Validates user input and returns one of four actions: Accept, Accept with notification, Reject with confirmation, or Convert. |
-| Live search | Uses DuckDuckGo via `ddgs`, falls back from news search to text search, and builds a candidate pool of up to 40 raw results. |
+| Live search | Uses DuckDuckGo via `ddgs`, always supplements news results with a general text search (not just as a failure fallback), and builds a candidate pool of up to 55 raw results per search call. |
 | Deduplication | Removes duplicate URLs and collapses likely wire-service or reprint clusters before analysis. |
 | Article enrichment | Scrapes selected articles with Jina Reader first, then BeautifulSoup/lxml as a fallback. |
 | Source analysis | Classifies article-level bias/framing and tone neutrality, and preserves source-balance metadata. |
@@ -167,7 +167,7 @@ agents-cli eval grade --config tests/eval/eval_config.yaml
 ## Configuration
 
 - `GEMINI_API_KEY` or `GOOGLE_API_KEY`: required for live agent runs.
-- `CURRENT_MODEL`: set internally by the coordinator from the selected model. The Streamlit selector currently defaults to Gemini 3.5 Flash; non-UI coordinator calls fall back to `gemini-3.1-flash-lite` unless a caller passes a model.
+- `CURRENT_MODEL`: set internally by the coordinator from the selected model. The Streamlit selector currently defaults to Gemini 3.1 Flash Lite; non-UI coordinator calls fall back to `gemini-3.1-flash-lite` unless a caller passes a model.
 - `LOGS_BUCKET_NAME`: optional GCS bucket for ADK artifact/telemetry paths in deployed environments.
 - `ALLOW_ORIGINS`: optional comma-separated CORS allowlist for the FastAPI app.
 
