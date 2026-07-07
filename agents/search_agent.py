@@ -57,6 +57,21 @@ SEARCH_PROFILES = {
             "High": "8 to 10",
         },
     },
+    "deep": {
+        "raw_fetch_target": 80,
+        "text_fetch_target": 80,
+        "thin_page_threshold": 30,
+        "max_to_scrape": {
+            "Simple": 12,
+            "Moderate": 22,
+            "High": 32,
+        },
+        "instruction_ranges": {
+            "Simple": "6 to 10",
+            "Moderate": "10 to 16",
+            "High": "16 to 24",
+        },
+    },
 }
 
 
@@ -483,13 +498,18 @@ def _get_live_news_articles_for_profile(
 
 
 def get_live_news_articles(topic: str) -> str:
-    """Default news search used by Balanced and Deep modes."""
+    """Default news search used by Balanced mode."""
     return _get_live_news_articles_for_profile(topic, search_profile="balanced")
 
 
 def get_fast_live_news_articles(topic: str) -> str:
     """Fast-mode news search with a smaller selected article scrape budget."""
     return _get_live_news_articles_for_profile(topic, search_profile="fast")
+
+
+def get_deep_live_news_articles(topic: str) -> str:
+    """Deep-mode news search with a larger candidate pool and scrape budget."""
+    return _get_live_news_articles_for_profile(topic, search_profile="deep")
 
 
 def get_search_agent(
@@ -505,6 +525,9 @@ def get_search_agent(
     if profile_name == "fast":
         tools = [get_fast_live_news_articles]
         tool_name = "get_fast_live_news_articles"
+    elif profile_name == "deep":
+        tools = [get_deep_live_news_articles]
+        tool_name = "get_deep_live_news_articles"
     else:
         tools = [get_live_news_articles]
         tool_name = "get_live_news_articles"

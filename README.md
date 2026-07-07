@@ -9,7 +9,7 @@ The project is intended for learning and experimentation only, not commercial us
 | Capability | Current implementation |
 | --- | --- |
 | Input check | Validates user input and returns one of four actions: Accept, Accept with notification, Reject with confirmation, or Convert. |
-| Live search | Uses DuckDuckGo via `ddgs`, always supplements news results with a general text search (not just as a failure fallback), and builds a candidate pool of up to 55 raw results per search call in Balanced/Deep mode (30 news + 24 text in Fast mode); see [Analysis Modes](#analysis-modes). |
+| Live search | Uses DuckDuckGo via `ddgs`, always supplements news results with a general text search (not just as a failure fallback), and builds a candidate pool of up to 55 raw results per search call in Balanced mode (80 in Deep mode, 30 news + 24 text in Fast mode); see [Analysis Modes](#analysis-modes). |
 | Deduplication | Removes duplicate URLs and collapses likely wire-service or reprint clusters before analysis. |
 | Article enrichment | Scrapes selected articles with Jina Reader first, then BeautifulSoup/lxml as a fallback. |
 | Source analysis | Classifies article-level bias/framing and tone neutrality, and preserves source-balance metadata. |
@@ -25,7 +25,7 @@ Both the Streamlit dashboard and the CLI (`--analysis-mode`) expose three runtim
 | Mode | Search candidate pool | Scrape budget (Simple/Moderate/High) | Audit revision cycles (stage / recruiter) | Downstream context | Optional modules |
 | --- | --- | --- | --- | --- | --- |
 | Balanced | 55 raw news + 55 raw text results per search call | 8 / 15 / 24 articles | 2 / 1 | Full article context passed to every downstream agent | Recruiter Agent decides normally |
-| Deep | Same as Balanced -- currently uses identical runtime settings; only the label and description differ | Same as Balanced | 2 / 1 | Same as Balanced | Recruiter Agent decides normally |
+| Deep | 80 raw news + 80 raw text results per search call | 12 / 22 / 32 articles | 3 / 2 | Full article context passed to every downstream agent | Recruiter Agent decides normally |
 | Fast | 30 raw news + 24 raw text results per search call | 5 / 8 / 10 articles | 1 / 0 | Compact context: capped at 10 articles, summaries/snippets truncated to 700 characters | Expert and Future Outlook agents are force-skipped when the Recruiter Agent rates the topic low/simple complexity |
 
 The search-side numbers come from `SEARCH_PROFILES` in `agents/search_agent.py`; the rest of the per-mode settings live in `agents/app_utils/analysis_mode.py`.
